@@ -1,20 +1,14 @@
 # aula-uploader
 
-CLI para **criar aulas e enviar vídeos** para um **capítulo já criado** no portal administrativo da Full Cycle ou DevOps Pro.
+CLI interativa para **criar capítulos**, **normalizar nomes de aulas** e **enviar vídeos** a um portal administrativo.
 
-## O que faz
-
-1. Você cria o capítulo no portal (e a pasta no Bunny).
-2. Cole o link do capítulo + a pasta (ou `.zip`) com os vídeos.
-3. A ferramenta normaliza os nomes, mostra o plano e, após confirmação, sobe as aulas.
-
-**Não faz (ainda):** criar capítulo, criar recurso no Bunny, subir vários capítulos de um curso.
+A pasta de vídeo no Bunny precisa existir antes. O capítulo pode ser criado pela ferramenta ou reutilizado se já estiver no curso.
 
 ## Requisitos
 
-- Python 3.10+
-- Acesso admin ao portal (mesmo usuário/senha do login em `portal.fullcycle.com.br` ou `portal.devopspro.com.br`)
-- Opcional: `ffprobe` (duração dos vídeos) e [Ollama](https://ollama.com) (sugestão de nomes)
+- Python 3.10+ (recomendado 3.12)
+- Usuário e senha de admin do portal
+- Opcional: `ffprobe` (duração dos vídeos) e [Ollama](https://ollama.com) (sugestão local de títulos)
 
 ## Instalação
 
@@ -26,71 +20,86 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-> Use Python **3.10+** (recomendado 3.12).
-## Credenciais
-
-Use o **mesmo usuário e senha** do portal administrativo.
+## Primeira execução
 
 ```bash
-cp .env.example .env
-# edite PORTAL_USERNAME e PORTAL_PASSWORD
+aula-uploader
 ```
 
-Ou deixe o `.env` vazio: o assistente pede usuário e senha no terminal (a senha não é exibida).
+Na primeira vez o assistente pede:
 
-Sessões ficam só na sua máquina (`~/.config/aula-uploader/`), com permissão restrita. Para apagar:
+1. Qual portal usar
+2. E-mail (usuário do admin)
+3. Senha (não é exibida)
+
+Você pode copiar `.env.example` para `.env` com usuário e senha. O assistente **não** faz login silencioso: pergunta se quer digitar agora ou usar o `.env`.
+
+Sessão opcional fica só nesta máquina (`~/.config/aula-uploader/`). Para apagar:
 
 ```bash
 aula-uploader logout
 ```
 
-## Formato dos vídeos
+## O que o assistente faz
 
-Aceita pasta **ou** `.zip` (é descompactado em pasta temporária).
+1. **Portal e login**
+2. **Destino**
+   - criar um capítulo (nome, ordem, URL da pasta Bunny)
+   - usar um capítulo existente (link da lista de aulas)
+   - usar um capítulo já mapeado neste computador (atualiza a lista no portal ao abrir o curso)
+   - **lote:** vários capítulos de uma vez
+3. **Vídeos** — pasta ou `.zip` (o original não é alterado)
+4. **Nomes** — normalização local, Ollama ou edição manual; sempre dá para revisar
+5. **Plano** — criar, enviar vídeo ou pular (aula já existe com vídeo)
+6. **Upload** — progresso por aula; no fim, link do admin para conferir e menu para enviar mais ou encerrar
+
+Aulas novas nascem como **rascunho**, salvo se você escolher publicar.
+
+### Lote (vários capítulos)
+
+1. Confirme o curso
+2. Monte a lista: nome, ordem e URL Bunny de cada capítulo (Bunny não pode se repetir)
+3. Revise
+4. Capítulos com o **mesmo nome** no curso não são recriados — só entram os vídeos que ainda não estão lá
+5. Vincule **à mão** a pasta/ZIP de cada capítulo
+6. Revise nomes por capítulo
+7. Uma escolha publicar/rascunho vale para o lote; o envio segue um capítulo por vez
+
+## Formato dos vídeos
 
 Extensões: `.mp4`, `.mov`, `.mkv`, `.avi`, `.m4v`, `.webm`.
 
-O nome do arquivo define ordem e título:
+O nome do arquivo sugere ordem e título (você confirma depois):
 
 | Arquivo | Ordem | Título |
 |---------|-------|--------|
 | `9-segurança.mp4` | 9 | Segurança |
 | `01 - Introdução.mp4` | 1 | Introdução |
-| `02_basico_03_docker_k8s_ed.mp4` | 3 | Docker K8s |
+| `9.1-O problema de segurança.mp4` | 1 | O Problema de Segurança |
 
-Você pode revisar/editar cada nome no assistente (setas + Enter). Se tiver Ollama, pode pedir sugestões e confirmar o lote.
+Links úteis no admin:
 
-## Uso
+- Curso (lista de capítulos): `.../admin/curso/capitulo/<ID>/curso`
+- Capítulo (lista de aulas): `.../admin/curso/conteudo/<ID>/capitulo`
+
+## Outros comandos
 
 ```bash
-aula-uploader doctor          # checa ambiente
-aula-uploader                 # assistente interativo
+aula-uploader doctor
 aula-uploader assistente
+aula-uploader plan --portal <id> --capitulo 299 --fonte ./videos
+aula-uploader upload --portal <id> --capitulo 299 --fonte ./aulas.zip
+aula-uploader resume --portal <id> --capitulo 299
 ```
 
-No assistente:
-
-1. Escolha o portal (Full Cycle ou DevOps Pro)
-2. Cole o link do capítulo: `.../admin/curso/conteudo/<ID>/capitulo`
-3. Informe a pasta ou o `.zip` (pode arrastar no terminal)
-4. Revise os nomes → confirme o destino → confirme o upload
-
-Aulas novas são criadas como **Rascunho** por padrão.
-
-### Linha de comando
-
-```bash
-aula-uploader plan --portal fullcycle --capitulo 299 --fonte ./videos
-aula-uploader upload --portal fullcycle --capitulo 299 --fonte ./aulas.zip
-aula-uploader resume --portal fullcycle --capitulo 299
-```
+Os IDs de `--portal` aparecem em `aula-uploader --help`. Sem subcomando, abre o assistente.
 
 ## Segurança
 
-- Credenciais e cookies **não** vão para o GitHub.
-- Logs mascaram URLs S3 / possíveis Access Keys.
-- Só aceita os domínios oficiais dos portais.
-- Confirmação obrigatória antes de enviar (exceto `--yes`).
+- Credenciais e cookies **não** vão para o Git. Não faça commit de `.env`.
+- Logs mascaram URLs assinadas e possíveis Access Keys.
+- Só os hosts oficiais do portal são aceitos.
+- Confirmação antes de enviar (exceto `--yes` na CLI).
 
 ## Licença
 

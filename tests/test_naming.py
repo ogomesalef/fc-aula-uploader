@@ -13,7 +13,7 @@ def test_parse_com_espacos():
     assert titulo == "Introdução"
 
 
-def test_parse_devops_style():
+def test_parse_underscore_style():
     ordem, titulo = parse_nome_aula("02_basico_agente_03_docker_k8s_ed.mp4")
     assert ordem == 3
     assert titulo == "Docker K8s"

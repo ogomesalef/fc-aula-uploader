@@ -80,8 +80,8 @@ def banner() -> None:
     console.print(
         Panel.fit(
             "[bold]aula-uploader[/bold]\n"
-            "Sobe aulas (vídeos) em um capítulo já criado no portal.\n"
-            "[dim]Capítulo e pasta Bunny devem existir antes.[/dim]",
+            "Cria capítulos e envia aulas (vídeos) no portal administrativo.\n"
+            "[dim]A pasta Bunny precisa existir antes.[/dim]",
             border_style="cyan",
         )
     )
@@ -110,11 +110,16 @@ def show_step(number: int, title: str, description: str = "") -> None:
 
 
 def ask_portal() -> str:
+    from aula_uploader.session import DEFAULT_URLS, PORTAL_LABELS
+
     escolha = questionary.select(
         "Portal de destino:",
         choices=[
-            questionary.Choice("Full Cycle (portal.fullcycle.com.br)", value="fullcycle"),
-            questionary.Choice("DevOps Pro (portal.devopspro.com.br)", value="devops"),
+            questionary.Choice(
+                f"{PORTAL_LABELS[key]} — {DEFAULT_URLS[key]}",
+                value=key,
+            )
+            for key in PORTAL_LABELS
         ],
     ).ask()
     if not escolha:
@@ -125,16 +130,14 @@ def ask_portal() -> str:
 def ask_login(portal_key: str):
     """Login no início do fluxo, pedindo credenciais de forma explícita."""
     from aula_uploader.session import (
-        PORTAL_LABELS,
         clear_session,
         enable_session_persistence,
         ensure_authenticated,
         has_saved_session,
     )
 
-    label = PORTAL_LABELS.get(portal_key, portal_key)
     console.print(
-        f"\n[dim]Use o mesmo usuário e senha do login administrativo em {label}.[/dim]"
+        "\n[dim]Use o mesmo e-mail e senha do login administrativo do portal.[/dim]"
     )
     console.print(
         "[dim]Mais seguro: digitar agora e não salvar sessão.[/dim]"
@@ -219,10 +222,9 @@ def _ask_credentials(portal_key: str) -> tuple[str, str]:
     """Pede usuário/senha no terminal. .env só vira sugestão, nunca login silencioso."""
     import getpass
 
-    from aula_uploader.session import PORTAL_LABELS, get_credentials
+    from aula_uploader.session import get_credentials
 
     _base, env_user, env_pass = get_credentials(portal_key)
-    label = PORTAL_LABELS.get(portal_key, portal_key)
 
     if env_user and env_pass:
         escolha = questionary.select(
@@ -241,12 +243,12 @@ def _ask_credentials(portal_key: str) -> tuple[str, str]:
         if not escolha:
             raise SystemExit(1)
         if escolha == "env":
-            console.print(f"[dim]Usando credenciais do .env para {label}.[/dim]")
+            console.print("[dim]Usando credenciais do .env neste computador.[/dim]")
             return env_user, env_pass
 
     default_user = env_user or ""
     user = questionary.text(
-        f"Usuário do portal {label}:",
+        "E-mail do portal:",
         default=default_user,
         validate=lambda text: bool(text.strip()),
     ).ask()
@@ -275,10 +277,103 @@ def ask_target_mode() -> str:
                 "Usar um capítulo já mapeado neste computador",
                 value="mapped",
             ),
+            questionary.Choice(
+                "Criar vários capítulos de uma vez (lote)",
+                value="batch",
+            ),
         ],
     ).ask()
     if not escolha:
         raise SystemExit(1)
+    return escolha
+
+
+def capitulo_admin_url(base_url: str, capitulo_id: int) -> str:
+    return f"{base_url.rstrip('/')}/admin/curso/conteudo/{capitulo_id}/capitulo"
+
+
+def curso_admin_url(base_url: str, curso_id: int) -> str:
+    return f"{base_url.rstrip('/')}/admin/curso/capitulo/{curso_id}/curso"
+
+
+def ask_after_upload(
+    *,
+    portal_url: str,
+    capitulo: CapituloResumo | None = None,
+    curso_nome: str = "",
+    curso_id: int | None = None,
+    has_failures: bool = False,
+    allow_same_chapter: bool = True,
+) -> str:
+    """Depois do upload: link do portal + próxima ação (não encerra sozinho)."""
+    _gap()
+    if capitulo is not None:
+        curso = capitulo.curso_nome or (
+            f"ID {capitulo.curso_id}" if capitulo.curso_id else "—"
+        )
+        detalhe = (
+            f"Curso: {curso}\n"
+            f"Capítulo: {capitulo.nome} (ID {capitulo.id})"
+        )
+    else:
+        curso = curso_nome or (f"ID {curso_id}" if curso_id else "—")
+        detalhe = f"Curso: {curso}"
+        if curso_id:
+            detalhe += f" (ID {curso_id})"
+
+    console.print(
+        Panel(
+            f"[bold]Conferir no portal[/bold]\n"
+            f"[cyan]{portal_url}[/cyan]\n\n"
+            f"{detalhe}",
+            title="Próximo passo",
+            border_style="cyan",
+            padding=(1, 2),
+        )
+    )
+    _gap()
+    if has_failures:
+        console.print(
+            "[yellow]Houve falhas neste envio. Você pode tentar de novo "
+            "no mesmo capítulo ou escolher outro destino.[/yellow]"
+        )
+        _gap()
+
+    choices = []
+    if allow_same_chapter and capitulo is not None:
+        choices.append(
+            questionary.Choice(
+                "Enviar mais vídeos neste mesmo capítulo",
+                value="same_chapter",
+            )
+        )
+    choices.extend(
+        [
+            questionary.Choice(
+                "Outro capítulo já mapeado (lista local)",
+                value="mapped",
+            ),
+            questionary.Choice(
+                "Outro capítulo (colar link do portal)",
+                value="existing",
+            ),
+            questionary.Choice(
+                "Criar um capítulo novo e subir aulas",
+                value="create",
+            ),
+            questionary.Choice(
+                "Criar vários capítulos de uma vez (lote)",
+                value="batch",
+            ),
+            questionary.Choice(
+                "Finalizar / encerrar",
+                value="exit",
+            ),
+        ]
+    )
+    escolha = questionary.select("O que deseja fazer agora?", choices=choices).ask()
+    if not escolha:
+        return "exit"
     return escolha
 
 
@@ -353,7 +448,7 @@ def ask_curso_id() -> int:
     while True:
         valor = questionary.text(
             "Link/ID do curso:\n"
-            "  ex.: https://portal.fullcycle.com.br/admin/curso/capitulo/291/curso"
+            "  ex.: .../admin/curso/capitulo/291/curso"
         ).ask()
         if valor is None:
             raise SystemExit(1)
@@ -420,7 +515,7 @@ def ask_capitulo_id() -> int:
     while True:
         valor = questionary.text(
             "Cole o link do capítulo (ou o ID):\n"
-            "  ex.: https://portal.fullcycle.com.br/admin/curso/conteudo/299/capitulo"
+            "  ex.: .../admin/curso/conteudo/299/capitulo"
         ).ask()
         if valor is None:
             raise SystemExit(1)
@@ -459,7 +554,7 @@ def ask_source_path() -> Path:
         console.print(f"[red]Pasta ou .zip não encontrado: {path}[/red]")
         console.print(
             "[dim]Caminhos com espaço ficam assim: "
-            "/Users/.../Full Cycle/teste (sem barra antes do espaço).[/dim]"
+            "/Users/.../Meu Curso/teste (sem barra antes do espaço).[/dim]"
         )
         console.print("[dim]Tente de novo.[/dim]")
 
@@ -765,7 +860,7 @@ def run_upload_screen(
     portal_key: str = "",
     capitulo: CapituloResumo | None = None,
 ) -> tuple[int, int, list[tuple[str, str]]]:
-    """Etapa 7: executa o upload com progresso visual."""
+    """Etapa 6: executa o upload com progresso visual."""
     from aula_uploader.runner import executar_plano
 
     show_step(
@@ -773,6 +868,7 @@ def run_upload_screen(
         "Enviar aulas",
         "Criando e enviando os vídeos. Não feche o terminal até terminar.",
     )
+    portal_url = capitulo_admin_url(portal.base_url, capitulo_id)
     if capitulo is not None:
         destino = f"{capitulo.nome} (ID {capitulo.id})"
         if capitulo.curso_nome:
@@ -801,7 +897,13 @@ def run_upload_screen(
             status_criacao=status_criacao,
             log=reporter,
         )
-    reporter.print_final(ok=ok, pulados=pulados, falhas=falhas, state_path=state.path)
+    reporter.print_final(
+        ok=ok,
+        pulados=pulados,
+        falhas=falhas,
+        state_path=state.path,
+        portal_url=portal_url,
+    )
     return ok, pulados, falhas
 
 
@@ -986,6 +1088,7 @@ class _UploadReporter:
         pulados: int,
         falhas: list[tuple[str, str]],
         state_path,
+        portal_url: str = "",
     ) -> None:
         if falhas:
             style = "red"
@@ -1003,10 +1106,336 @@ class _UploadReporter:
             f"[red]{len(falhas)}[/red] falhas\n"
             f"[dim]Estado: {state_path}[/dim]"
         )
+        if portal_url:
+            body += f"\n\n[bold]Conferir no portal:[/bold]\n[cyan]{portal_url}[/cyan]"
         if falhas:
             detalhes = "\n".join(
                 f"[red]✗[/red] {titulo_aula}: {msg}" for titulo_aula, msg in falhas
             )
             body += f"\n\n{detalhes}\n[dim]Retome com: aula-uploader resume[/dim]"
         console.print()
-        console.print(Panel(body, title=titulo, border_style=style))
+        console.print(Panel(body, title=titulo, border_style=style, padding=(1, 2)))
+
+
+BATCH_STEPS = 7
+
+
+def show_batch_step(number: int, title: str, description: str = "") -> None:
+    """Etapa do fluxo em lote (paralelo ao assistente simples)."""
+    console.clear()
+    progress = "  ".join(
+        "[cyan]●[/cyan]" if idx <= number else "[dim]○[/dim]"
+        for idx in range(1, BATCH_STEPS + 1)
+    )
+    body = f"[bold]{title}[/bold]"
+    if description:
+        body += f"\n[dim]{description}[/dim]"
+    console.print(
+        Panel(
+            body,
+            title=f"aula-uploader · Lote {number}/{BATCH_STEPS}",
+            subtitle=progress,
+            border_style="cyan",
+            padding=(1, 2),
+        )
+    )
+    _gap()
+
+
+def show_batch_chapters_table(chapters) -> None:
+    from aula_uploader.batch import BatchChapterDraft
+
+    table = _make_table("Capítulos do lote")
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("Ordem", justify="right", no_wrap=True)
+    table.add_column("Nome", overflow="fold")
+    table.add_column("Bunny", no_wrap=True)
+    table.add_column("Situação", no_wrap=True)
+    for idx, chapter in enumerate(chapters, start=1):
+        assert isinstance(chapter, BatchChapterDraft)
+        if chapter.capitulo_id and chapter.already_existed:
+            situacao = "[magenta]já existe[/magenta]"
+        elif chapter.capitulo_id:
+            situacao = "[green]criar[/green]"
+        else:
+            situacao = "[dim]pendente[/dim]"
+        table.add_row(
+            str(idx),
+            str(chapter.ordem),
+            chapter.nome,
+            chapter.bunny_folder_id,
+            situacao,
+        )
+    console.print(table)
+    _gap()
+
+
+def build_batch_chapters(*, suggested_order: int):
+    """Monta a lista de capítulos do lote (nome, ordem, Bunny URL)."""
+    from aula_uploader.batch import validate_batch_chapters
+
+    chapters = []
+    next_order = suggested_order
+
+    while True:
+        show_batch_step(
+            2,
+            "Montar capítulos",
+            "Informe nome, ordem e URL Bunny de cada capítulo. Depois revise.",
+        )
+        if chapters:
+            show_batch_chapters_table(chapters)
+
+        escolha = questionary.select(
+            "Capítulos do lote:",
+            choices=[
+                questionary.Choice("Adicionar capítulo", value="add"),
+                questionary.Choice(
+                    "Editar um capítulo",
+                    value="edit",
+                    disabled=None if chapters else "Nenhum ainda",
+                ),
+                questionary.Choice(
+                    "Remover um capítulo",
+                    value="remove",
+                    disabled=None if chapters else "Nenhum ainda",
+                ),
+                questionary.Choice(
+                    "Continuar — revisar lista",
+                    value="done",
+                    disabled=None if chapters else "Adicione pelo menos um",
+                ),
+                questionary.Choice("Cancelar lote", value="cancel"),
+            ],
+        ).ask()
+        if not escolha or escolha == "cancel":
+            return None
+        if escolha == "done":
+            errors = validate_batch_chapters(chapters)
+            if errors:
+                console.print("[red]Corrija antes de continuar:[/red]")
+                for err in errors:
+                    console.print(f"  • {err}")
+                _gap()
+                continue
+            break
+        if escolha == "add":
+            draft = _ask_batch_chapter_fields(default_order=next_order)
+            if draft is None:
+                continue
+            chapters.append(draft)
+            next_order = max(c.ordem for c in chapters) + 1
+            continue
+        if escolha == "edit":
+            idx = _pick_batch_chapter_index(chapters, "Editar qual capítulo?")
+            if idx is None:
+                continue
+            updated = _ask_batch_chapter_fields(
+                default_order=chapters[idx].ordem,
+                defaults=chapters[idx],
+            )
+            if updated is not None:
+                chapters[idx] = updated
+            continue
+        if escolha == "remove":
+            idx = _pick_batch_chapter_index(chapters, "Remover qual capítulo?")
+            if idx is not None:
+                removed = chapters.pop(idx)
+                console.print(f"[dim]Removido: {removed.nome}[/dim]")
+
+    show_batch_step(
+        3,
+        "Revisar capítulos",
+        "Confira nomes, ordens e pastas Bunny. Nenhuma Bunny pode se repetir.",
+    )
+    show_batch_chapters_table(chapters)
+    errors = validate_batch_chapters(chapters)
+    if errors:
+        for err in errors:
+            console.print(f"[red]• {err}[/red]")
+        return None
+    if not ask_yes_no("Capítulos do lote estão corretos?", default=True):
+        return build_batch_chapters(suggested_order=suggested_order)
+    return chapters
+
+
+def _ask_batch_chapter_fields(*, default_order: int, defaults=None):
+    from aula_uploader.batch import BatchChapterDraft
+
+    nome = questionary.text(
+        "Nome do capítulo:",
+        default=defaults.nome if defaults else "",
+        validate=lambda text: bool(text.strip()),
+    ).ask()
+    if nome is None:
+        return None
+    bunny_default = ""
+    if defaults is not None:
+        bunny_default = defaults.bunny_url or defaults.bunny_folder_id
+    bunny_url = questionary.text(
+        "URL ou ID da pasta Bunny:",
+        default=bunny_default,
+        instruction="A pasta deve já existir no Bunny.",
+    ).ask()
+    if bunny_url is None:
+        return None
+    try:
+        bunny_id = parse_bunny_folder_id(bunny_url)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return None
+    order = questionary.text(
+        "Ordem do capítulo:",
+        default=str(defaults.ordem if defaults else default_order),
+        validate=lambda text: text.isdigit() and int(text) > 0,
+    ).ask()
+    if order is None:
+        return None
+    return BatchChapterDraft(
+        nome=nome.strip(),
+        ordem=int(order),
+        bunny_folder_id=bunny_id,
+        bunny_url=bunny_url.strip(),
+    )
+
+
+def _pick_batch_chapter_index(chapters, prompt: str) -> int | None:
+    escolha = questionary.select(
+        prompt,
+        choices=[
+            questionary.Choice(
+                f"#{idx} · ordem {c.ordem} · {c.nome}",
+                value=str(idx - 1),
+            )
+            for idx, c in enumerate(chapters, start=1)
+        ]
+        + [questionary.Choice("Voltar", value="back")],
+    ).ask()
+    if not escolha or escolha == "back":
+        return None
+    return int(escolha)
+
+
+def link_batch_folders(chapters) -> bool:
+    """Pede pasta/ZIP manualmente para cada capítulo do lote."""
+    from aula_uploader.batch import validate_batch_folders
+    from aula_uploader.media import cleanup_temp, enrich_durations, resolve_source
+    from aula_uploader.naming import listar_videos
+
+    show_batch_step(
+        5,
+        "Vincular pastas de vídeo",
+        "Escolha à mão a pasta ou ZIP de cada capítulo (ou pule vídeos).",
+    )
+
+    for chapter in chapters:
+        # Limpa temp anterior se re-vincular.
+        old_temp = getattr(chapter, "_temp_dir", None)
+        if old_temp is not None:
+            cleanup_temp(old_temp)
+            setattr(chapter, "_temp_dir", None)
+
+        console.print(
+            Panel(
+                f"[bold]{chapter.nome}[/bold]\n"
+                f"Ordem {chapter.ordem} · Bunny {chapter.bunny_folder_id}"
+                + (f" · ID {chapter.capitulo_id}" if chapter.capitulo_id else ""),
+                title="Capítulo",
+                border_style="cyan",
+                padding=(0, 1),
+            )
+        )
+        _gap()
+        escolha = questionary.select(
+            f"Vídeos para “{chapter.nome}”:",
+            choices=[
+                questionary.Choice("Informar pasta ou ZIP", value="path"),
+                questionary.Choice("Pular vídeos neste capítulo", value="skip"),
+            ],
+        ).ask()
+        if not escolha:
+            return False
+        if escolha == "skip":
+            chapter.skip_videos = True
+            chapter.pasta = None
+            chapter.aulas = []
+            console.print("[dim]Sem vídeos neste capítulo.[/dim]")
+            _gap()
+            continue
+
+        while True:
+            fonte = ask_source_path()
+            try:
+                pasta, temp_dir = resolve_source(fonte)
+                aulas = listar_videos(pasta)
+                if not aulas:
+                    cleanup_temp(temp_dir)
+                    console.print(f"[red]Nenhum vídeo em {pasta}[/red]")
+                    continue
+                enrich_durations(aulas)
+                chapter.pasta = pasta
+                chapter.aulas = aulas
+                chapter.skip_videos = False
+                setattr(chapter, "_temp_dir", temp_dir)
+                console.print(
+                    f"[green]✓[/green] {len(aulas)} vídeo(s) em [bold]{pasta.name}[/bold]"
+                )
+                _gap()
+                break
+            except (FileNotFoundError, RuntimeError, OSError, NotADirectoryError) as exc:
+                console.print(f"[red]{exc}[/red]")
+
+    errors = validate_batch_folders(chapters)
+    if errors:
+        console.print("[red]Problemas no vínculo das pastas:[/red]")
+        for err in errors:
+            console.print(f"  • {err}")
+        if not ask_yes_no("Tentar vincular de novo?", default=True):
+            return False
+        return link_batch_folders(chapters)
+
+    show_batch_folders_table(chapters)
+    return ask_yes_no("Vínculos capítulo ↔ pasta estão corretos?", default=True)
+
+
+def show_batch_folders_table(chapters) -> None:
+    table = _make_table("Capítulos ↔ pastas")
+    table.add_column("Ordem", justify="right")
+    table.add_column("Capítulo")
+    table.add_column("Pasta")
+    table.add_column("Vídeos", justify="right")
+    for chapter in chapters:
+        if chapter.skip_videos or chapter.pasta is None:
+            pasta = "[dim]— (sem vídeos)[/dim]"
+            qtd = "—"
+        else:
+            pasta = str(chapter.pasta)
+            qtd = str(len(chapter.aulas))
+        table.add_row(str(chapter.ordem), chapter.nome, pasta, qtd)
+    console.print(table)
+    _gap()
+
+
+def show_batch_final_table(chapters) -> None:
+    from aula_uploader.batch import batch_summary_rows
+
+    table = _make_table("Conferência final do lote")
+    table.add_column("Ordem", justify="right")
+    table.add_column("Capítulo")
+    table.add_column("Bunny")
+    table.add_column("No portal")
+    table.add_column("Pasta")
+    table.add_column("Aulas")
+    table.add_column("Ações")
+    for row in batch_summary_rows(chapters):
+        table.add_row(
+            row["ordem"],
+            row["capitulo"],
+            row["bunny"],
+            row["destino"],
+            row["pasta"],
+            row["aulas"],
+            row["acoes"],
+        )
+    console.print(table)
+    _gap()

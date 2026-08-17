@@ -92,7 +92,7 @@ def test_mask_url_redacts_access_key_pattern():
 
 
 def test_normalize_user_path_unescapes_space(tmp_path):
-    pasta = tmp_path / "Full Cycle"
+    pasta = tmp_path / "Meu Curso"
     pasta.mkdir()
     alvo = pasta / "teste"
     alvo.mkdir()

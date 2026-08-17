@@ -19,8 +19,8 @@ ALLOWED_HOSTS = {
 }
 
 PORTAL_LABELS = {
-    "fullcycle": "Full Cycle",
-    "devops": "DevOps Pro",
+    "fullcycle": "Portal 1",
+    "devops": "Portal 2",
 }
 
 DEFAULT_URLS = {
@@ -90,14 +90,26 @@ def get_credentials(portal_key: str) -> tuple[str, str, str]:
         raise ValueError(f"Portal desconhecido: {portal_key}")
 
     if portal_key == "fullcycle":
-        base = os.getenv("PORTAL_FULLCYCLE_URL", DEFAULT_URLS["fullcycle"])
+        base = os.getenv("PORTAL_1_URL") or os.getenv(
+            "PORTAL_FULLCYCLE_URL", DEFAULT_URLS["fullcycle"]
+        )
         user = os.getenv("PORTAL_USERNAME", "")
         password = os.getenv("PORTAL_PASSWORD", "")
     else:
-        base = os.getenv("PORTAL_DEVOPS_URL", DEFAULT_URLS["devops"])
-        user = os.getenv("DEVOPS_PORTAL_USERNAME") or os.getenv("PORTAL_USERNAME", "")
-        password = os.getenv("DEVOPS_PORTAL_PASSWORD") or os.getenv(
-            "PORTAL_PASSWORD", ""
+        base = (
+            os.getenv("PORTAL_2_URL")
+            or os.getenv("PORTAL_DEVOPS_URL")
+            or DEFAULT_URLS["devops"]
+        )
+        user = (
+            os.getenv("PORTAL_2_USERNAME")
+            or os.getenv("DEVOPS_PORTAL_USERNAME")
+            or os.getenv("PORTAL_USERNAME", "")
+        )
+        password = (
+            os.getenv("PORTAL_2_PASSWORD")
+            or os.getenv("DEVOPS_PORTAL_PASSWORD")
+            or os.getenv("PORTAL_PASSWORD", "")
         )
 
     base = validate_base_url(base, portal_key)

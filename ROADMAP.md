@@ -1,19 +1,23 @@
 # Roadmap
 
 ## v1 (atual)
-- Subir aulas (vídeos) em um **capítulo já criado**
+
+- Assistente por etapas (login, destino, vídeos, nomes, plano, upload)
+- Criar um capítulo ou vários em lote (pasta Bunny já existente)
+- Reutilizar capítulo com o mesmo nome no curso (só vídeos ainda não publicados)
+- Catálogo local de cursos/capítulos, atualizado ao abrir o curso
 - Pasta ou ZIP, normalização de nomes, revisão interativa
 - Ollama opcional (local)
-- Full Cycle + DevOps Pro
+- Dois portais oficiais (hosts no código)
 
 ## Próximas funções (candidatas)
-- Criar capítulos em lote no curso (com pasta Bunny já provisionada)
+
 - Replicar conteúdos entre capítulos (com dry-run e regras)
-- Wizard genérico de abertura de turma
+- Retomar lote interrompido
 - Liberações por turma × data
-- Catálogo/sync de cursos → capítulos → conteúdos (sem PII)
 
 ## Fora do escopo público
-- NFe / financeiro
-- HubSpot e dados de alunos
+
+- Financeiro e notas fiscais
+- CRM e dados de alunos
 - Scripts operacionais internos de uma organização

@@ -46,3 +46,12 @@ def test_format_acao_uses_distinct_colors():
     assert "green" in format_acao(Acao.CRIAR)
     assert "magenta" in format_acao(Acao.PULAR)
     assert "cyan" in format_acao(Acao.ENVIAR)
+
+
+def test_capitulo_admin_url():
+    from aula_uploader.tui import capitulo_admin_url
+
+    assert (
+        capitulo_admin_url("https://portal.fullcycle.com.br", 2276)
+        == "https://portal.fullcycle.com.br/admin/curso/conteudo/2276/capitulo"
+    )

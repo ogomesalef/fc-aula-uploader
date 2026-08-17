@@ -82,7 +82,7 @@ def enrich_durations(aulas: list) -> None:
 def normalize_user_path(raw: str) -> Path:
     """Normaliza caminho colado/arrastado no terminal.
 
-    Aceita aspas e escapes de shell (ex.: ``Full\\ Cycle`` → ``Full Cycle``).
+    Aceita aspas e escapes de shell (ex.: ``Meu\\ Curso`` → ``Meu Curso``).
     """
     text = (raw or "").strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
