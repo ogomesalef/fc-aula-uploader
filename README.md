@@ -26,6 +26,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+> Use Python **3.10+** (recomendado 3.12).
 ## Credenciais
 
 Use o **mesmo usuário e senha** do portal administrativo.
