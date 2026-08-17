@@ -189,3 +189,26 @@ def test_catalog_tem_permissao_restrita(tmp_path):
     path = tmp_path / "catalog.json"
     CatalogStore(path).upsert_course(CursoInfo(id=1, nome="Curso"), [])
     assert not path.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO)
+
+
+def test_remember_after_upload_so_grava_se_subiu_aula(tmp_path):
+    from aula_uploader.portal_client import PortalClient
+
+    catalog = CatalogStore(tmp_path / "catalog.json")
+    capitulo = CapituloResumo(
+        id=10,
+        nome="Intro",
+        curso_id=99,
+        curso_nome="Curso Novo",
+    )
+    portal = PortalClient("https://portal.fullcycle.com.br", "", "")
+    try:
+        catalog.remember_after_upload(portal, capitulo, uploaded=0)
+        assert catalog.get_course(99) is None
+        catalog.remember_after_upload(portal, capitulo, uploaded=2)
+    finally:
+        portal.close()
+    course = catalog.get_course(99)
+    assert course is not None
+    assert course.nome == "Curso Novo"
+    assert course.chapters[0].id == 10

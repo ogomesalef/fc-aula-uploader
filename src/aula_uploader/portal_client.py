@@ -6,6 +6,7 @@ import json
 import math
 import re
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,83 @@ AUTH_CACHE_SECONDS = 300
 CAPITULO_PREFIX = "son_cursosbundle_capitulo"
 CONTEUDO_PREFIX = "son_cursosbundle_conteudotype"
 VIDEO_TIPO_NIVO = "12"
+CURSO_EDIT_HREF = re.compile(r"/admin/curso/(\d+)/edit")
+CURSO_SEARCH_MAX_PAGES = 15
+
+
+def _fold_text(text: str) -> str:
+    """Caixa-baixa sem acento: comunicação → comunicacao."""
+    decomposto = unicodedata.normalize("NFD", text)
+    sem_acento = "".join(
+        ch for ch in decomposto if unicodedata.category(ch) != "Mn"
+    )
+    return sem_acento.casefold()
+
+
+def search_query_variants(query: str) -> list[str]:
+    """Texto original e versão sem acento, se forem diferentes."""
+    query = query.strip()
+    if not query:
+        return []
+    folded = "".join(
+        ch
+        for ch in unicodedata.normalize("NFD", query)
+        if unicodedata.category(ch) != "Mn"
+    )
+    variants: list[str] = []
+    seen: set[str] = set()
+    for value in (query, folded):
+        key = value.casefold()
+        if value and key not in seen:
+            seen.add(key)
+            variants.append(value)
+    return variants
+
+
+def _text_matches(text: str, query: str) -> bool:
+    query = query.strip()
+    if not query:
+        return True
+    hay = _fold_text(text)
+    return all(part in hay for part in _fold_text(query).split())
+
+
+def parse_curso_search_page(html: str) -> tuple[list[CursoInfo], set[int]]:
+    """Extrai cursos da listagem /admin/curso/ e os números de página do pager."""
+    soup = BeautifulSoup(html, "html.parser")
+    cursos: list[CursoInfo] = []
+    seen: set[int] = set()
+    for row in soup.select("table tbody tr"):
+        edit = row.select_one('a[href*="/admin/curso/"][href*="/edit"]')
+        if not edit:
+            continue
+        match = CURSO_EDIT_HREF.search(str(edit.get("href", "")))
+        if not match:
+            continue
+        curso_id = int(match.group(1))
+        if curso_id in seen:
+            continue
+        nome = ""
+        delete = row.select_one("[data-curso-nome]")
+        if delete:
+            nome = str(delete.get("data-curso-nome") or "").strip()
+        if not nome:
+            cells = row.find_all("td")
+            if len(cells) > 2:
+                br = cells[2].find("br")
+                if br is not None:
+                    prev = br.previous_sibling
+                    nome = str(prev).strip() if prev else ""
+                if not nome:
+                    nome = cells[2].get_text(" ", strip=True)
+        seen.add(curso_id)
+        cursos.append(CursoInfo(id=curso_id, nome=nome or f"Curso {curso_id}"))
+    pages: set[int] = set()
+    for link in soup.find_all("a", href=True):
+        page_match = re.search(r"[?&]page=(\d+)", str(link["href"]))
+        if page_match:
+            pages.add(int(page_match.group(1)))
+    return cursos, pages
 
 
 @dataclass
@@ -323,6 +401,36 @@ class PortalClient:
         if not nome:
             raise RuntimeError(f"Não foi possível identificar o nome do curso {curso_id}")
         return CursoInfo(id=curso_id, nome=nome)
+
+    def buscar_cursos(self, query: str) -> list[CursoInfo]:
+        """Lista cursos em /admin/curso/?string=… (trecho do nome; tenta com e sem acento)."""
+        query = query.strip()
+        if not query:
+            return []
+        merged: dict[int, CursoInfo] = {}
+        for variant in search_query_variants(query):
+            pending = {1}
+            seen_pages: set[int] = set()
+            while pending:
+                page = min(pending)
+                pending.remove(page)
+                if page in seen_pages or page > CURSO_SEARCH_MAX_PAGES:
+                    continue
+                seen_pages.add(page)
+                params: dict[str, str | int] = {"string": variant}
+                if page > 1:
+                    params["page"] = page
+                response = self._get(f"{self.base_url}/admin/curso/", params=params)
+                response.raise_for_status()
+                cursos, pages = parse_curso_search_page(response.text)
+                for curso in cursos:
+                    merged[curso.id] = curso
+                for other in pages:
+                    if other not in seen_pages and other <= CURSO_SEARCH_MAX_PAGES:
+                        pending.add(other)
+        results = list(merged.values())
+        filtered = [curso for curso in results if _text_matches(f"{curso.nome} {curso.id}", query)]
+        return filtered
 
     def list_capitulos(self, curso_id: int) -> list[CapituloInfo]:
         response = self._get(

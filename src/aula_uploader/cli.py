@@ -372,6 +372,7 @@ def cmd_assistente(args: argparse.Namespace) -> int:
                 portal_key=portal_key,
                 capitulo=capitulo,
             )
+            catalog.remember_after_upload(portal, capitulo, uploaded=_ok)
             if falhas:
                 exit_code = 1
 
@@ -458,14 +459,6 @@ def _assistente_batch(
                 f"[magenta]↻[/magenta] {chapter.nome} — já existe "
                 f"(ID {chapter.capitulo_id}), pulando criação."
             )
-            catalog.upsert_chapter(
-                CapituloResumo(
-                    id=int(chapter.capitulo_id),
-                    nome=chapter.nome,
-                    curso_id=curso.id,
-                    curso_nome=curso.nome,
-                )
-            )
             continue
         try:
             created = portal.create_capitulo(
@@ -478,19 +471,9 @@ def _assistente_batch(
             console.print(
                 f"[green]✓[/green] Criado {created.nome} (ID {created.id})"
             )
-            catalog.upsert_chapter(
-                CapituloResumo(
-                    id=created.id,
-                    nome=created.nome,
-                    curso_id=curso.id,
-                    curso_nome=curso.nome,
-                )
-            )
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]Falha ao criar “{chapter.nome}”: {exc}[/red]")
             return 1, "exit"
-
-    catalog.sync_course_in_background(portal, curso.id)
 
     if not tui.link_batch_folders(plan.chapters):
         _cleanup_batch_temps(plan.chapters)
@@ -582,6 +565,9 @@ def _assistente_batch(
         if falhas:
             exit_code = 1
 
+    if total_ok > 0:
+        catalog.sync_course_in_background(portal, curso.id)
+
     _cleanup_batch_temps(plan.chapters)
 
     curso_url = tui.curso_admin_url(portal.base_url, curso.id)
@@ -666,7 +652,6 @@ def _assistente_escolher_capitulo(
         console.print(
             f"[green]✓ Capítulo criado: {created.nome} (ID {created.id})[/green]"
         )
-        catalog.sync_course_in_background(portal, curso_id)
         return created.id, capitulo
 
     if mode == "mapped":
@@ -678,13 +663,12 @@ def _assistente_escolher_capitulo(
         selected = tui.ask_mapped_chapter(catalog, portal)
         if selected is None:
             console.print(
-                "[yellow]Use a opção de informar curso/capítulo para iniciar o mapeamento.[/yellow]"
+                "[yellow]Busque o curso por nome ou cole o link do capítulo para começar.[/yellow]"
             )
             return None
         _course_id, capitulo_id = selected
         try:
             capitulo = portal.inspect_capitulo(capitulo_id)
-            catalog.upsert_chapter(capitulo)
             return capitulo_id, capitulo
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]Não foi possível abrir o capítulo mapeado: {exc}[/red]")
@@ -702,9 +686,6 @@ def _assistente_escolher_capitulo(
         capitulo_id = tui.ask_capitulo_id()
         try:
             capitulo = portal.inspect_capitulo(capitulo_id)
-            catalog.upsert_chapter(capitulo)
-            if capitulo.curso_id is not None:
-                catalog.sync_course_in_background(portal, capitulo.curso_id)
             break
         except Exception as exc:  # noqa: BLE001
             console.print(
@@ -725,9 +706,6 @@ def _assistente_escolher_capitulo(
             capitulo_id = tui.ask_capitulo_id()
             try:
                 capitulo = portal.inspect_capitulo(capitulo_id)
-                catalog.upsert_chapter(capitulo)
-                if capitulo.curso_id is not None:
-                    catalog.sync_course_in_background(portal, capitulo.curso_id)
                 break
             except Exception as exc:  # noqa: BLE001
                 console.print(f"[red]Ainda não deu: {exc}[/red]")
@@ -792,6 +770,7 @@ def _run_noninteractive(
             log=lambda m: console.print(m),
         )
         console.print(f"Concluído: {ok} ok · {pulados} pulados · {len(falhas)} falhas")
+        CatalogStore().remember_after_upload(portal, capitulo, uploaded=ok)
         return 1 if falhas else 0
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]{exc}[/red]")
@@ -870,6 +849,9 @@ def cmd_resume(args: argparse.Namespace) -> int:
             only_pending=True,
         )
         console.print(f"Concluído: {ok} ok · {pulados} pulados · {len(falhas)} falhas")
+        if ok > 0:
+            capitulo = portal.inspect_capitulo(args.capitulo)
+            CatalogStore().remember_after_upload(portal, capitulo, uploaded=ok)
         return 1 if falhas else 0
     except (FileNotFoundError, RuntimeError, OSError) as exc:
         console.print(f"[red]{exc}[/red]")

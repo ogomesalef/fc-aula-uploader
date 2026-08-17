@@ -72,6 +72,17 @@ def parse_curso_id(valor: str) -> int:
     )
 
 
+def resolve_curso_query(valor: str) -> int | str:
+    """ID ou URL do admin → int; qualquer outro texto → busca por nome no portal."""
+    valor = valor.strip().strip("'\"")
+    if not valor:
+        raise ValueError("Informe o nome, o ID ou o link do curso.")
+    try:
+        return parse_curso_id(valor)
+    except ValueError:
+        return valor
+
+
 def parse_bunny_folder_id(valor: str) -> str:
     """Extrai o ID de pasta de uma URL Bunny ou aceita o ID diretamente."""
     valor = valor.strip().strip("'\"")

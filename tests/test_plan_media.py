@@ -50,6 +50,20 @@ def test_parse_curso_id_from_admin_url():
     )
 
 
+def test_resolve_curso_query_id_url_ou_nome():
+    from aula_uploader.plan import resolve_curso_query
+
+    assert resolve_curso_query("291") == 291
+    assert (
+        resolve_curso_query(
+            "https://portal.fullcycle.com.br/admin/curso/291/edit"
+        )
+        == 291
+    )
+    assert resolve_curso_query("protocolos") == "protocolos"
+    assert resolve_curso_query("  Comunicação  ") == "Comunicação"
+
+
 def test_parse_bunny_folder_id_from_url():
     assert (
         parse_bunny_folder_id(

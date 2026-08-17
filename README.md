@@ -52,9 +52,9 @@ A checagem usa a rede uma vez a cada algumas horas e falha em silêncio se estiv
 
 1. **Portal e login**
 2. **Destino**
-   - criar um capítulo (nome, ordem, URL da pasta Bunny)
+   - criar um capítulo (nome, ordem, URL da pasta Bunny) — o curso pode ser escolhido na lista mapeada ou buscado por trecho do nome no portal
    - usar um capítulo existente (link da lista de aulas)
-   - usar um capítulo já mapeado (lista em ordem alfabética, com busca por trecho do nome; já vêm *Arquitetura na Era da IA* e *Protocolos de Comunicação*, e a lista atualiza no portal ao abrir o curso)
+   - usar um capítulo já mapeado (lista com setas; digite para filtrar por trecho do nome, com ou sem acento). Já vêm *Arquitetura na Era da IA* e *Protocolos de Comunicação*. Um curso novo só entra nesta lista depois que você sobe uma aula nele
    - **lote:** vários capítulos de uma vez
 3. **Vídeos** — pasta ou `.zip` (o original não é alterado)
 4. **Nomes** — normalização local, Ollama ou edição manual; sempre dá para revisar

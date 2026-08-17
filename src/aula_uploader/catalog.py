@@ -197,6 +197,19 @@ class CatalogStore:
             )
             self._save()
 
+    def remember_after_upload(
+        self,
+        portal: PortalClient,
+        capitulo: CapituloResumo,
+        *,
+        uploaded: int,
+    ) -> None:
+        """Só entra no catálogo mapeado depois de subir pelo menos uma aula."""
+        if uploaded <= 0 or capitulo.curso_id is None:
+            return
+        self.upsert_chapter(capitulo)
+        self.sync_course_in_background(portal, capitulo.curso_id)
+
     def sync_course(self, portal: PortalClient, course_id: int) -> CatalogCourse:
         """Busca o curso no portal e substitui o cache local daquele curso."""
         curso = portal.inspect_curso(course_id)

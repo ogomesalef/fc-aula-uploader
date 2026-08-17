@@ -232,3 +232,143 @@ def test_create_conteudo(httpx_mock, portal):
         ConteudoData(titulo="Nova Aula", ordem=2, tipo="12", status="0"),
     )
     assert novo == 101
+
+
+CURSO_LIST_HTML = """
+<html><body>
+<table><tbody>
+<tr>
+  <td><a href="/admin/curso/296/edit">296</a></td>
+  <td></td>
+  <td>
+    Protocolos de Comunicação
+    <br/>
+    <small>30h<br/>Escapar EV e abrir HTML5/AWS? <span>Não</span></small>
+  </td>
+  <td>MBA</td>
+  <td>Wesley</td>
+  <td></td>
+  <td>
+    <a class="js-curso-delete-trigger" data-curso-nome="Protocolos de Comunicação" href="#">Excluir</a>
+  </td>
+</tr>
+<tr>
+  <td><a href="/admin/curso/116/edit">116</a></td>
+  <td></td>
+  <td>
+    Comunicação entre sistemas
+    <br/>
+    <small>18h</small>
+  </td>
+  <td>Dev</td>
+  <td>Wesley</td>
+  <td></td>
+  <td>
+    <a class="js-curso-delete-trigger" data-curso-nome="Comunicação entre sistemas" href="#">Excluir</a>
+  </td>
+</tr>
+<tr>
+  <td><a href="/admin/curso/95/edit">95</a></td>
+  <td></td>
+  <td>Arquitetura de software<br/><small>32h</small></td>
+  <td>Dev</td>
+  <td>Wesley</td>
+  <td></td>
+  <td>
+    <a class="js-curso-delete-trigger" data-curso-nome="Arquitetura de software" href="#">Excluir</a>
+  </td>
+</tr>
+</tbody></table>
+<div class="pagination"><center></center></div>
+</body></html>
+"""
+
+CURSO_LIST_PAGE1_HTML = """
+<html><body>
+<table><tbody>
+<tr>
+  <td><a href="/admin/curso/95/edit">95</a></td>
+  <td></td>
+  <td>Arquitetura de software<br/><small>32h</small></td>
+  <td></td><td></td><td></td>
+  <td><a class="js-curso-delete-trigger" data-curso-nome="Arquitetura de software" href="#">x</a></td>
+</tr>
+</tbody></table>
+<div class="pagination">
+  <a href="/admin/curso/?string=arquitetura&amp;page=2">2</a>
+  <a href="/admin/curso/?string=arquitetura&amp;page=2">Next</a>
+</div>
+</body></html>
+"""
+
+CURSO_LIST_PAGE2_HTML = """
+<html><body>
+<table><tbody>
+<tr>
+  <td><a href="/admin/curso/291/edit">291</a></td>
+  <td></td>
+  <td>Arquitetura na Era da IA<br/><small>20h</small></td>
+  <td></td><td></td><td></td>
+  <td><a class="js-curso-delete-trigger" data-curso-nome="Arquitetura na Era da IA" href="#">x</a></td>
+</tr>
+</tbody></table>
+</body></html>
+"""
+
+
+def test_parse_curso_search_page_usa_nome_limpo():
+    from aula_uploader.portal_client import parse_curso_search_page
+
+    cursos, pages = parse_curso_search_page(CURSO_LIST_HTML)
+    by_id = {curso.id: curso.nome for curso in cursos}
+    assert by_id[296] == "Protocolos de Comunicação"
+    assert "30h" not in by_id[296]
+    assert "Escapar" not in by_id[296]
+    assert by_id[116] == "Comunicação entre sistemas"
+    assert pages == set()
+
+
+def test_search_query_variants_com_e_sem_acento():
+    from aula_uploader.portal_client import search_query_variants
+
+    assert search_query_variants("comunicação") == ["comunicação", "comunicacao"]
+    assert search_query_variants("comunicacao") == ["comunicacao"]
+    assert search_query_variants("  ") == []
+
+
+def test_buscar_cursos_por_trecho_filtra_acento(httpx_mock, portal):
+    httpx_mock.add_response(
+        url="https://portal.fullcycle.com.br/admin/curso/?string=comunicacao",
+        text=CURSO_LIST_HTML,
+    )
+    encontrados = portal.buscar_cursos("comunicacao")
+    assert [(curso.id, curso.nome) for curso in encontrados] == [
+        (296, "Protocolos de Comunicação"),
+        (116, "Comunicação entre sistemas"),
+    ]
+
+
+def test_buscar_cursos_tenta_variante_sem_acento(httpx_mock, portal):
+    httpx_mock.add_response(
+        url="https://portal.fullcycle.com.br/admin/curso/?string=comunica%C3%A7%C3%A3o",
+        text="<html><body><table><tbody></tbody></table></body></html>",
+    )
+    httpx_mock.add_response(
+        url="https://portal.fullcycle.com.br/admin/curso/?string=comunicacao",
+        text=CURSO_LIST_HTML,
+    )
+    encontrados = portal.buscar_cursos("comunicação")
+    assert {curso.id for curso in encontrados} == {296, 116}
+
+
+def test_buscar_cursos_segue_paginacao(httpx_mock, portal):
+    httpx_mock.add_response(
+        url="https://portal.fullcycle.com.br/admin/curso/?string=arquitetura",
+        text=CURSO_LIST_PAGE1_HTML,
+    )
+    httpx_mock.add_response(
+        url="https://portal.fullcycle.com.br/admin/curso/?string=arquitetura&page=2",
+        text=CURSO_LIST_PAGE2_HTML,
+    )
+    encontrados = portal.buscar_cursos("arquitetura")
+    assert [curso.id for curso in encontrados] == [95, 291]

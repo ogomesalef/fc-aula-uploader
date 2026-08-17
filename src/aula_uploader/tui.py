@@ -22,7 +22,7 @@ from aula_uploader.plan import (
     Acao,
     PlanoItem,
     parse_bunny_folder_id,
-    parse_curso_id,
+    resolve_curso_query,
     titulos_duplicados,
 )
 from aula_uploader.portal_client import CapituloInfo, CapituloResumo, CursoInfo, PortalClient
@@ -32,6 +32,8 @@ from aula_uploader.state import UploadState
 console = Console()
 TOTAL_STEPS = 6
 _T = TypeVar("_T")
+_BUSCAR_PORTAL = object()
+_FILTER_INSTRUCTION = "Setas para escolher · digite para filtrar (acento não importa)"
 
 _ACAO_STYLE = {
     Acao.CRIAR: "bold green",
@@ -52,38 +54,150 @@ def _gap() -> None:
     console.print()
 
 
+def filter_searchable(
+    items: list[_T],
+    query: str,
+    blob: Callable[[_T], str],
+) -> list[_T]:
+    """Filtra a lista: trecho no meio do nome, com ou sem acento."""
+    return [item for item in items if matches_search(blob(item), query)]
+
+
+def _filterable_select(
+    message: str,
+    choices: list[questionary.Choice],
+    blobs: list[str],
+    *,
+    n_pinned: int = 0,
+    instruction: str = _FILTER_INSTRUCTION,
+) -> object:
+    """Lista com setas; ao digitar, filtra (acento não conta)."""
+    import string
+
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+    from questionary.constants import DEFAULT_SELECTED_POINTER
+    from questionary.prompts.common import InquirerControl, create_inquirer_layout
+    from questionary.question import Question
+    from questionary.styles import merge_styles_default
+
+    class _Control(InquirerControl):
+        def __init__(self, choices, **kwargs) -> None:
+            self._blobs = blobs
+            self._n_pinned = n_pinned
+            super().__init__(choices, **kwargs)
+
+        @property
+        def filtered_choices(self):
+            if not self.search_filter:
+                return self.choices
+            n_regular = len(self.choices) - self._n_pinned
+            filtered = [
+                choice
+                for index, choice in enumerate(self.choices[:n_regular])
+                if matches_search(self._blobs[index], self.search_filter)
+            ]
+            pinned = self.choices[n_regular:]
+            self.found_in_search = bool(filtered)
+            if filtered:
+                return filtered + pinned
+            if pinned:
+                return pinned
+            return self.choices
+
+    ic = _Control(
+        choices,
+        pointer=DEFAULT_SELECTED_POINTER,
+        use_indicator=False,
+        use_shortcuts=False,
+        show_selected=False,
+        show_description=False,
+        use_arrow_keys=True,
+    )
+
+    def get_prompt_tokens():
+        tokens = [("class:qmark", "?"), ("class:question", f" {message} ")]
+        if ic.is_answered:
+            pointed = ic.get_pointed_at()
+            title = pointed.title if isinstance(pointed.title, str) else ""
+            tokens.append(("class:answer", title))
+        else:
+            tokens.append(("class:instruction", f"({instruction})"))
+        return tokens
+
+    bindings = KeyBindings()
+
+    @bindings.add(Keys.ControlQ, eager=True)
+    @bindings.add(Keys.ControlC, eager=True)
+    def _abort(event):  # noqa: ARG001
+        event.app.exit(exception=KeyboardInterrupt, style="class:aborting")
+
+    def move_cursor_down(event):  # noqa: ARG001
+        ic.select_next()
+        while not ic.is_selection_valid():
+            ic.select_next()
+
+    def move_cursor_up(event):  # noqa: ARG001
+        ic.select_previous()
+        while not ic.is_selection_valid():
+            ic.select_previous()
+
+    def search_filter(event):
+        ic.add_search_character(event.key_sequence[0].key)
+
+    for character in string.printable:
+        bindings.add(character, eager=True)(search_filter)
+    bindings.add(Keys.Backspace, eager=True)(search_filter)
+    bindings.add(Keys.Down, eager=True)(move_cursor_down)
+    bindings.add(Keys.Up, eager=True)(move_cursor_up)
+    bindings.add(Keys.ControlN, eager=True)(move_cursor_down)
+    bindings.add(Keys.ControlP, eager=True)(move_cursor_up)
+
+    @bindings.add(Keys.ControlM, eager=True)
+    def set_answer(event):
+        ic.is_answered = True
+        event.app.exit(result=(ic.get_pointed_at().value, ic.search_filter or ""))
+
+    @bindings.add(Keys.Any)
+    def _other(event):  # noqa: ARG001
+        return
+
+    return Question(
+        Application(
+            layout=create_inquirer_layout(ic, get_prompt_tokens),
+            key_bindings=bindings,
+            style=merge_styles_default([None]),
+        )
+    ).ask()
+
+
 def _select_from_searchable(
     items: list[_T],
     *,
-    search_prompt: str,
-    select_prompt: str,
+    prompt: str,
     label: Callable[[_T], str],
     blob: Callable[[_T], str],
     empty_msg: str,
-) -> _T:
-    """Campo de busca + lista. O trecho pode estar no meio do nome; acento não conta."""
-    while True:
-        query = questionary.text(
-            search_prompt,
-            instruction="Trecho do nome ou ID. Vazio lista tudo. Acento não importa.",
-            default="",
-        ).ask()
-        if query is None:
-            raise SystemExit(1)
-        filtered = [item for item in items if matches_search(blob(item), query)]
-        if not filtered:
-            console.print(f"[yellow]{empty_msg}[/yellow]")
-            _gap()
-            continue
-        escolha = questionary.select(
-            select_prompt,
-            choices=[
-                questionary.Choice(label(item), value=item) for item in filtered
-            ],
-        ).ask()
-        if escolha is None:
-            raise SystemExit(1)
-        return escolha
+    pinned: list[tuple[object, str]] | None = None,
+    with_query: bool = False,
+) -> _T | object | tuple[object, str]:
+    """Lista visível com setas; digitação filtra por trecho do nome."""
+    if not items and not pinned:
+        console.print(f"[yellow]{empty_msg}[/yellow]")
+        raise SystemExit(1)
+    choices = [questionary.Choice(label(item), value=item) for item in items]
+    blobs = [blob(item) for item in items]
+    pinned = pinned or []
+    for value, pinned_label in pinned:
+        choices.append(questionary.Choice(pinned_label, value=value))
+    escolha = _filterable_select(prompt, choices, blobs, n_pinned=len(pinned))
+    if escolha is None:
+        raise SystemExit(1)
+    value, query = escolha
+    if with_query:
+        return value, query
+    return value
 
 
 def _make_table(title: str = "", *, show_header: bool = True) -> Table:
@@ -451,14 +565,13 @@ def ask_mapped_chapter(
     if not courses:
         console.print(
             "[yellow]Ainda não há cursos mapeados neste computador.[/yellow]\n"
-            "[dim]Informe um curso ou capítulo uma vez; ele será mapeado em segundo plano.[/dim]"
+            "[dim]O curso entra nesta lista depois que você sobe uma aula nele.[/dim]"
         )
         return None
 
     course = _select_from_searchable(
         courses,
-        search_prompt="Buscar curso:",
-        select_prompt="Curso já mapeado:",
+        prompt="Curso já mapeado:",
         label=lambda c: (
             f"{c.nome} (ID {c.id}) · {len(c.chapters)} capítulo(s)"
         ),
@@ -490,8 +603,7 @@ def ask_mapped_chapter(
 
     chapter = _select_from_searchable(
         list(course.chapters),
-        search_prompt="Buscar capítulo:",
-        select_prompt=f"Capítulo de {course.nome}:",
+        prompt=f"Capítulo de {course.nome}:",
         label=lambda ch: (
             f"{ch.ordem if ch.ordem else '—'} · {ch.nome} (ID {ch.id})"
         ),
@@ -501,21 +613,78 @@ def ask_mapped_chapter(
     return course_id, int(chapter.id)
 
 
-def ask_curso_id() -> int:
+def ask_curso_id(portal: PortalClient, catalog: CatalogStore | None = None) -> int:
+    """Lista mapeada com setas, ou busca no portal por nome/ID/URL."""
+    mapped = list(catalog.courses()) if catalog is not None else []
+    if mapped:
+        escolha, query = _select_from_searchable(
+            mapped,
+            prompt="Curso:",
+            label=lambda course: (
+                f"{course.nome} (ID {course.id}) · "
+                f"{len(course.chapters)} capítulo(s)"
+            ),
+            blob=lambda course: f"{course.nome} {course.id}",
+            empty_msg="Nenhum curso mapeado com esse trecho.",
+            pinned=[(_BUSCAR_PORTAL, "Buscar outro curso no portal…")],
+            with_query=True,
+        )
+        if escolha is not _BUSCAR_PORTAL:
+            return int(escolha.id)
+        if query.strip():
+            found = _search_curso_portal(portal, query.strip())
+            if found is not None:
+                return found
+    return _ask_curso_from_portal(portal)
+
+
+def _search_curso_portal(portal: PortalClient, query: str) -> int | None:
+    """Busca no admin e devolve o ID, ou None se não achou / falhou."""
+    console.print(f"[dim]Buscando “{query}” no portal…[/dim]")
+    try:
+        encontrados = portal.buscar_cursos(query)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Não foi possível buscar o curso: {exc}[/red]")
+        return None
+    if not encontrados:
+        console.print("[yellow]Nenhum curso com esse nome. Tente outro trecho.[/yellow]")
+        return None
+    if len(encontrados) == 1:
+        curso = encontrados[0]
+        console.print(f"  → {curso.nome} (ID {curso.id})")
+        return curso.id
+    escolhido = _select_from_searchable(
+        sorted(encontrados, key=lambda course: nome_sort_key(course.nome)),
+        prompt="Qual curso?",
+        label=lambda course: f"{course.nome} (ID {course.id})",
+        blob=lambda course: f"{course.nome} {course.id}",
+        empty_msg="Nenhum resultado com esse trecho.",
+    )
+    return int(escolhido.id)
+
+
+def _ask_curso_from_portal(portal: PortalClient) -> int:
     console.print(
-        "[dim]Cole o link do curso no admin ou somente o ID dele.[/dim]"
+        "[dim]Trecho do nome, ID ou link do curso no admin. "
+        "Enter pesquisa no portal (acento não importa).[/dim]"
     )
     while True:
         valor = questionary.text(
-            "Link/ID do curso:\n"
-            "  ex.: .../admin/curso/capitulo/291/curso"
+            "Curso no portal:\n"
+            "  ex.: protocolos   ou   291   ou   .../admin/curso/291/edit"
         ).ask()
         if valor is None:
             raise SystemExit(1)
         try:
-            return parse_curso_id(valor)
+            resolved = resolve_curso_query(valor)
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
+            continue
+        if isinstance(resolved, int):
+            return resolved
+        found = _search_curso_portal(portal, resolved)
+        if found is not None:
+            return found
 
 
 def show_curso(
@@ -593,11 +762,10 @@ def ask_confirmed_curso(
 ) -> tuple[CursoInfo, list[CapituloInfo]]:
     """Pede o curso, mostra o que já tem lá e só segue depois da confirmação."""
     while True:
-        curso_id = ask_curso_id()
+        curso_id = ask_curso_id(portal, catalog)
         try:
             curso = portal.inspect_curso(curso_id)
             capitulos = portal.list_capitulos(curso_id)
-            catalog.upsert_course(curso, capitulos)
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]Não foi possível ler o curso: {exc}[/red]")
             continue

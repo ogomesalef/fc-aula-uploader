@@ -73,3 +73,19 @@ def test_curso_chapter_rows_ordena_por_ordem_e_nome():
         ("1", "Beta", "10"),
         ("2", "Zebra", "20"),
     ]
+
+
+def test_filter_searchable_trecho_sem_acento():
+    from types import SimpleNamespace
+
+    from aula_uploader.tui import filter_searchable
+
+    items = [
+        SimpleNamespace(nome="Protocolos de Comunicação", id=296),
+        SimpleNamespace(nome="Arquitetura na Era da IA", id=291),
+    ]
+    found = filter_searchable(items, "comunicacao", lambda c: f"{c.nome} {c.id}")
+    assert [item.id for item in found] == [296]
+    found = filter_searchable(items, "291", lambda c: f"{c.nome} {c.id}")
+    assert [item.id for item in found] == [291]
+    assert filter_searchable(items, "", lambda c: c.nome) == items
