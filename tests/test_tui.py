@@ -55,3 +55,21 @@ def test_capitulo_admin_url():
         capitulo_admin_url("https://portal.fullcycle.com.br", 2276)
         == "https://portal.fullcycle.com.br/admin/curso/conteudo/2276/capitulo"
     )
+
+
+def test_curso_chapter_rows_ordena_por_ordem_e_nome():
+    from aula_uploader.portal_client import CapituloInfo
+    from aula_uploader.tui import curso_chapter_rows
+
+    rows = curso_chapter_rows(
+        [
+            CapituloInfo(id=20, nome="Zebra", ordem=2, curso_id=1),
+            CapituloInfo(id=10, nome="Beta", ordem=1, curso_id=1),
+            CapituloInfo(id=11, nome="Alfa", ordem=1, curso_id=1),
+        ]
+    )
+    assert rows == [
+        ("1", "Alfa", "11"),
+        ("1", "Beta", "10"),
+        ("2", "Zebra", "20"),
+    ]

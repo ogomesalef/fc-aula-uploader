@@ -6,11 +6,36 @@ import json
 import os
 import threading
 import time
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from aula_uploader.portal_client import CapituloInfo, CapituloResumo, CursoInfo, PortalClient
 from aula_uploader.session import config_dir
+
+SEED_CATALOG_PATH = Path(__file__).resolve().parent / "data" / "seed_catalog.json"
+
+
+def nome_sort_key(nome: str) -> str:
+    """Ordem alfabética ignorando acento e caixa (Arquitetura, Índice, Protocolos)."""
+    decomposto = unicodedata.normalize("NFD", nome)
+    sem_acento = "".join(
+        ch for ch in decomposto if unicodedata.category(ch) != "Mn"
+    )
+    return sem_acento.casefold()
+
+
+def matches_search(text: str, query: str) -> bool:
+    """Trecho em qualquer parte do nome; acento e caixa não importam.
+
+    ``comunicacao`` encontra ``Protocolos de Comunicação``.
+    Várias palavras exigem que todas apareçam (em qualquer ordem).
+    """
+    query = query.strip()
+    if not query:
+        return True
+    hay = nome_sort_key(text)
+    return all(part in hay for part in nome_sort_key(query).split())
 
 
 @dataclass
@@ -28,34 +53,67 @@ class CatalogCourse:
     chapters: list[CatalogChapter] = field(default_factory=list)
 
 
+def _parse_courses(payload: object) -> dict[int, CatalogCourse]:
+    if not isinstance(payload, dict):
+        return {}
+    courses: dict[int, CatalogCourse] = {}
+    for raw in payload.get("courses", []):
+        if not isinstance(raw, dict):
+            continue
+        chapters = [
+            CatalogChapter(
+                id=int(chapter["id"]),
+                nome=str(chapter["nome"]),
+                ordem=int(chapter.get("ordem", 0)),
+            )
+            for chapter in raw.get("chapters", [])
+            if isinstance(chapter, dict)
+        ]
+        course = CatalogCourse(
+            id=int(raw["id"]),
+            nome=str(raw["nome"]),
+            updated_at=float(raw.get("updated_at", 0)),
+            chapters=sorted(
+                chapters,
+                key=lambda chapter: (chapter.ordem, nome_sort_key(chapter.nome)),
+            ),
+        )
+        courses[course.id] = course
+    return courses
+
+
+def load_seed_courses() -> dict[int, CatalogCourse]:
+    """Cursos que já vêm no repositório para a pessoa usar no primeiro clone."""
+    try:
+        payload = json.loads(SEED_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return {}
+    return _parse_courses(payload)
+
+
 class CatalogStore:
     """Armazena somente metadados de navegação no computador do usuário."""
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(self, path: Path | None = None, *, seed: bool | None = None) -> None:
         self.path = path or (config_dir() / "catalog.json")
+        # Seed só no catálogo padrão do usuário. Testes passam um path e ficam vazios.
+        self._use_seed = seed if seed is not None else path is None
         self._lock = threading.RLock()
         self._courses = self._load()
 
     def _load(self) -> dict[int, CatalogCourse]:
-        if not self.path.exists():
-            return {}
-        try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-            courses: dict[int, CatalogCourse] = {}
-            for raw in payload.get("courses", []):
-                chapters = [
-                    CatalogChapter(**chapter) for chapter in raw.get("chapters", [])
-                ]
-                course = CatalogCourse(
-                    id=int(raw["id"]),
-                    nome=str(raw["nome"]),
-                    updated_at=float(raw.get("updated_at", 0)),
-                    chapters=chapters,
+        courses: dict[int, CatalogCourse] = {}
+        if self.path.exists():
+            try:
+                courses = _parse_courses(
+                    json.loads(self.path.read_text(encoding="utf-8"))
                 )
-                courses[course.id] = course
-            return courses
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return {}
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                courses = {}
+        if self._use_seed:
+            for course_id, seeded in load_seed_courses().items():
+                courses.setdefault(course_id, seeded)
+        return courses
 
     def _save(self) -> None:
         """Grava de forma atômica: a sync em background pode escrever junto."""
@@ -79,7 +137,7 @@ class CatalogStore:
         with self._lock:
             return sorted(
                 self._courses.values(),
-                key=lambda course: course.nome.casefold(),
+                key=lambda course: nome_sort_key(course.nome),
             )
 
     def get_course(self, course_id: int) -> CatalogCourse | None:
@@ -105,7 +163,7 @@ class CatalogStore:
                         )
                         for chapter in chapters
                     ],
-                    key=lambda chapter: (chapter.ordem, chapter.nome.casefold()),
+                    key=lambda chapter: (chapter.ordem, nome_sort_key(chapter.nome)),
                 ),
             )
             self._save()
@@ -134,7 +192,7 @@ class CatalogStore:
                 updated_at=time.time(),
                 chapters=sorted(
                     chapters,
-                    key=lambda chapter: (chapter.ordem, chapter.nome.casefold()),
+                    key=lambda chapter: (chapter.ordem, nome_sort_key(chapter.nome)),
                 ),
             )
             self._save()

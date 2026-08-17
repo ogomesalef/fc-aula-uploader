@@ -2,8 +2,19 @@ import json
 import stat
 import threading
 
-from aula_uploader.catalog import CatalogStore
+from aula_uploader.catalog import CatalogStore, matches_search
 from aula_uploader.portal_client import CapituloInfo, CapituloResumo, CursoInfo
+
+
+def test_matches_search_acha_trecho_no_meio_sem_acento():
+    nome = "Protocolos de Comunicação"
+    assert matches_search(nome, "comunicacao")
+    assert matches_search(nome, "COMUNICAÇÃO")
+    assert matches_search(nome, "protocolos comu")
+    assert matches_search(f"{nome} 296", "296")
+    assert not matches_search(nome, "arquitetura")
+    assert matches_search(nome, "")
+    assert matches_search(nome, "   ")
 
 
 def test_catalog_persists_course_and_chapters(tmp_path):
@@ -90,6 +101,52 @@ def test_sync_course_replaces_stale_chapters(tmp_path):
         (2, "Capítulo novo", 3),
     ]
     assert CatalogStore(tmp_path / "catalog.json").get_course(291).nome == "Curso atualizado"
+
+
+def test_courses_are_sorted_alphabetically(tmp_path):
+    catalog = CatalogStore(tmp_path / "catalog.json")
+    catalog.upsert_course(CursoInfo(id=2, nome="Protocolos de Comunicação"), [])
+    catalog.upsert_course(CursoInfo(id=1, nome="Arquitetura na Era da IA"), [])
+    catalog.upsert_course(CursoInfo(id=3, nome="índice"), [])
+    assert [c.nome for c in catalog.courses()] == [
+        "Arquitetura na Era da IA",
+        "índice",
+        "Protocolos de Comunicação",
+    ]
+
+
+def test_seed_preenche_catalogo_padrao_sem_arquivo(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    catalog = CatalogStore()
+    nomes = [c.nome for c in catalog.courses()]
+    assert nomes == [
+        "Arquitetura na Era da IA",
+        "Protocolos de Comunicação",
+    ]
+    assert catalog.get_course(291) is not None
+    assert len(catalog.get_course(291).chapters) == 9
+    assert catalog.get_course(296) is not None
+
+
+def test_seed_nao_sobrescreve_curso_ja_mapeado(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    path = tmp_path / "aula-uploader" / "catalog.json"
+    path.parent.mkdir(parents=True)
+    local = CatalogStore(path, seed=False)
+    local.upsert_course(
+        CursoInfo(id=291, nome="Nome local"),
+        [CapituloInfo(id=1, nome="Só o meu", ordem=1, curso_id=291)],
+    )
+    catalog = CatalogStore()  # path padrão = config_dir/catalog.json
+    assert catalog.get_course(291).nome == "Nome local"
+    assert [c.nome for c in catalog.get_course(291).chapters] == ["Só o meu"]
+    # O outro curso do seed continua disponível.
+    assert catalog.get_course(296) is not None
+
+
+def test_catalog_sem_path_de_teste_nao_injeta_seed(tmp_path):
+    catalog = CatalogStore(tmp_path / "catalog.json")
+    assert catalog.courses() == []
 
 
 def test_catalog_escrita_e_atomica_com_upserts_concorrentes(tmp_path):

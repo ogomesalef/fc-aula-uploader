@@ -40,13 +40,21 @@ Salvar a sessão é opcional e o padrão é **não salvar**. Se você aceitar, e
 aula-uploader logout
 ```
 
+Ao abrir o assistente (e no `doctor`), se o GitHub estiver à frente do clone, aparece um aviso. Não precisa avisar ninguém: a pessoa atualiza com:
+
+```bash
+git pull && pip install -e .
+```
+
+A checagem usa a rede uma vez a cada algumas horas e falha em silêncio se estiver offline.
+
 ## O que o assistente faz
 
 1. **Portal e login**
 2. **Destino**
    - criar um capítulo (nome, ordem, URL da pasta Bunny)
    - usar um capítulo existente (link da lista de aulas)
-   - usar um capítulo já mapeado neste computador (atualiza a lista no portal ao abrir o curso)
+   - usar um capítulo já mapeado (lista em ordem alfabética, com busca por trecho do nome; já vêm *Arquitetura na Era da IA* e *Protocolos de Comunicação*, e a lista atualiza no portal ao abrir o curso)
    - **lote:** vários capítulos de uma vez
 3. **Vídeos** — pasta ou `.zip` (o original não é alterado)
 4. **Nomes** — normalização local, Ollama ou edição manual; sempre dá para revisar

@@ -195,6 +195,15 @@ def cmd_doctor() -> int:
         "Credenciais: o mesmo e-mail e senha do login administrativo "
         "(via .env ou prompt na primeira execução)."
     )
+    from aula_uploader.updates import check_for_update
+
+    status = check_for_update()
+    if status is None:
+        console.print("GitHub: não deu para checar (offline ou não é um clone git)")
+    elif status.available:
+        console.print(f"GitHub: tem versão nova → {status.command}")
+    else:
+        console.print("GitHub: atualizado")
     return 0
 
 
@@ -212,11 +221,15 @@ def cmd_assistente(args: argparse.Namespace) -> int:
     temp_dir = None
     exit_code = 0
     try:
+        from aula_uploader.updates import check_for_update
+
+        # Checa antes de limpar a tela, para o aviso já aparecer na etapa 1.
+        update = check_for_update()
         tui.show_step(
             1,
             "Portal e login",
-            "Autentique primeiro. Assim falhamos cedo se a senha estiver errada.",
         )
+        tui.show_update_notice(update)
         portal_key = tui.ask_portal()
         portal = tui.ask_login(portal_key)
         catalog = CatalogStore()
@@ -398,20 +411,12 @@ def _assistente_batch(
         "Curso do lote",
         "Todos os capítulos serão criados/vinculados neste curso.",
     )
-    while True:
-        curso_id = tui.ask_curso_id()
-        try:
-            curso = portal.inspect_curso(curso_id)
-            existentes = portal.list_capitulos(curso_id)
-            catalog.upsert_course(curso, existentes)
-            break
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[red]Não foi possível ler o curso: {exc}[/red]")
-
+    curso, existentes = tui.ask_confirmed_curso(
+        portal,
+        catalog,
+        confirm_prompt="Este é o curso certo para o lote?",
+    )
     last_order = max((c.ordem for c in existentes), default=0)
-    tui.show_curso(curso, last_order=last_order if existentes else None)
-    if not tui.ask_yes_no("Este é o curso certo para o lote?", default=True):
-        return None
 
     chapters = tui.build_batch_chapters(
         suggested_order=last_order + 1, existing=existentes
@@ -628,30 +633,9 @@ def _assistente_escolher_capitulo(
             "Criar capítulo",
             "Primeiro confirme o curso. A pasta Bunny já deve existir.",
         )
-        while True:
-            curso_id = tui.ask_curso_id()
-            try:
-                curso = portal.inspect_curso(curso_id)
-                capitulos = portal.list_capitulos(curso_id)
-                catalog.upsert_course(curso, capitulos)
-                break
-            except Exception as exc:  # noqa: BLE001
-                console.print(f"[red]Não foi possível ler o curso: {exc}[/red]")
-
+        curso, capitulos = tui.ask_confirmed_curso(portal, catalog)
         last_order = max((chapter.ordem for chapter in capitulos), default=0)
-        tui.show_curso(curso, last_order=last_order if capitulos else None)
-        if not tui.ask_yes_no("Este é o curso certo?", default=True):
-            console.print("[yellow]Ok, informe outro curso.[/yellow]")
-            while True:
-                curso_id = tui.ask_curso_id()
-                try:
-                    curso = portal.inspect_curso(curso_id)
-                    capitulos = portal.list_capitulos(curso_id)
-                    catalog.upsert_course(curso, capitulos)
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    console.print(f"[red]Não foi possível ler o curso: {exc}[/red]")
-            last_order = max((chapter.ordem for chapter in capitulos), default=0)
+        curso_id = curso.id
 
         chapter_name, bunny_folder_id, chapter_order = tui.ask_new_chapter_details(
             last_order + 1

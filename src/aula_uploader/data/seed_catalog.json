@@ -1,0 +1,33 @@
+{
+  "courses": [
+    {
+      "id": 291,
+      "nome": "Arquitetura na Era da IA",
+      "chapters": [
+        { "id": 2172, "nome": "Introdução", "ordem": 1 },
+        { "id": 2173, "nome": "Acoplamento e saúde da aplicação ao longo do tempo", "ordem": 2 },
+        { "id": 2217, "nome": "AI Gateways", "ordem": 3 },
+        { "id": 2219, "nome": "Fluxos de Chamada", "ordem": 4 },
+        { "id": 2222, "nome": "Cache", "ordem": 5 },
+        { "id": 2228, "nome": "RAG", "ordem": 6 },
+        { "id": 2265, "nome": "Observabilidade", "ordem": 7 },
+        { "id": 2267, "nome": "Testes e Evaluation em Arquiteturas com IA", "ordem": 8 },
+        { "id": 2272, "nome": "Segurança", "ordem": 9 }
+      ]
+    },
+    {
+      "id": 296,
+      "nome": "Protocolos de Comunicação",
+      "chapters": [
+        { "id": 2246, "nome": "Boas-vindas", "ordem": 1 },
+        { "id": 2247, "nome": "Evolução e Fundamentos", "ordem": 2 },
+        { "id": 2248, "nome": "Arquitetura MCP", "ordem": 3 },
+        { "id": 2249, "nome": "Desenvolvimento MCP", "ordem": 4 },
+        { "id": 2250, "nome": "Produção e Segurança", "ordem": 5 },
+        { "id": 2251, "nome": "Google A2A", "ordem": 6 },
+        { "id": 2252, "nome": "Desenvolvimento A2A", "ordem": 7 },
+        { "id": 2253, "nome": "Arquiteturas Multi-Agente", "ordem": 8 }
+      ]
+    }
+  ]
+}

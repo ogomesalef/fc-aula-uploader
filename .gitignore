@@ -6,6 +6,7 @@
 # Sessões e estado local
 .sessions/
 data/
+!src/aula_uploader/data/
 *.session.json
 upload_state*.json
 

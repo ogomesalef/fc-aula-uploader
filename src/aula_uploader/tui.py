@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 import questionary
 from rich import box
@@ -12,7 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from aula_uploader.batch import BatchChapterDraft
-from aula_uploader.catalog import CatalogStore
+from aula_uploader.catalog import CatalogStore, matches_search, nome_sort_key
 from aula_uploader.media import format_bytes, format_duration
 from aula_uploader.naming import AulaArquivo
 from aula_uploader.ollama_client import detect_ollama, suggest_titles
@@ -29,6 +31,7 @@ from aula_uploader.state import UploadState
 
 console = Console()
 TOTAL_STEPS = 6
+_T = TypeVar("_T")
 
 _ACAO_STYLE = {
     Acao.CRIAR: "bold green",
@@ -47,6 +50,40 @@ _ACAO_HINT = {
 def _gap() -> None:
     """Espaço vertical entre blocos da TUI."""
     console.print()
+
+
+def _select_from_searchable(
+    items: list[_T],
+    *,
+    search_prompt: str,
+    select_prompt: str,
+    label: Callable[[_T], str],
+    blob: Callable[[_T], str],
+    empty_msg: str,
+) -> _T:
+    """Campo de busca + lista. O trecho pode estar no meio do nome; acento não conta."""
+    while True:
+        query = questionary.text(
+            search_prompt,
+            instruction="Trecho do nome ou ID. Vazio lista tudo. Acento não importa.",
+            default="",
+        ).ask()
+        if query is None:
+            raise SystemExit(1)
+        filtered = [item for item in items if matches_search(blob(item), query)]
+        if not filtered:
+            console.print(f"[yellow]{empty_msg}[/yellow]")
+            _gap()
+            continue
+        escolha = questionary.select(
+            select_prompt,
+            choices=[
+                questionary.Choice(label(item), value=item) for item in filtered
+            ],
+        ).ask()
+        if escolha is None:
+            raise SystemExit(1)
+        return escolha
 
 
 def _make_table(title: str = "", *, show_header: bool = True) -> Table:
@@ -112,6 +149,26 @@ def show_step(number: int, title: str, description: str = "") -> None:
             subtitle=progress,
             border_style="cyan",
             padding=(1, 2),
+        )
+    )
+    _gap()
+
+
+def show_update_notice(status=None) -> None:
+    """Aviso curto se o GitHub estiver à frente. Rede falha = silêncio."""
+    from aula_uploader.updates import UpdateStatus, check_for_update
+
+    if status is None:
+        status = check_for_update()
+    if not isinstance(status, UpdateStatus) or not status.available:
+        return
+    console.print(
+        Panel(
+            "Tem versão nova no GitHub.\n"
+            f"Na pasta do projeto: [bold]{status.command}[/bold]",
+            title="Atualização",
+            border_style="yellow",
+            padding=(0, 1),
         )
     )
     _gap()
@@ -390,7 +447,7 @@ def ask_mapped_chapter(
     portal,
 ) -> tuple[int, int] | None:
     """Navega por curso → capítulo; ao escolher o curso, sincroniza com o portal."""
-    courses = catalog.courses()
+    courses = sorted(catalog.courses(), key=lambda course: nome_sort_key(course.nome))
     if not courses:
         console.print(
             "[yellow]Ainda não há cursos mapeados neste computador.[/yellow]\n"
@@ -398,20 +455,17 @@ def ask_mapped_chapter(
         )
         return None
 
-    course_id = questionary.select(
-        "Curso já mapeado:",
-        choices=[
-            questionary.Choice(
-                f"{course.nome} (ID {course.id}) · {len(course.chapters)} capítulo(s)",
-                value=course.id,
-            )
-            for course in courses
-        ],
-    ).ask()
-    if course_id is None:
-        raise SystemExit(1)
-
-    course_id = int(course_id)
+    course = _select_from_searchable(
+        courses,
+        search_prompt="Buscar curso:",
+        select_prompt="Curso já mapeado:",
+        label=lambda c: (
+            f"{c.nome} (ID {c.id}) · {len(c.chapters)} capítulo(s)"
+        ),
+        blob=lambda c: f"{c.nome} {c.id}",
+        empty_msg="Nenhum curso com esse trecho. Tente de novo.",
+    )
+    course_id = int(course.id)
     cached = catalog.get_course(course_id)
     console.print(
         f"\n[cyan]Atualizando[/cyan] capítulos de "
@@ -434,19 +488,17 @@ def ask_mapped_chapter(
         console.print("[yellow]Este curso ainda não possui capítulos no catálogo.[/yellow]")
         return None
 
-    chapter_id = questionary.select(
-        f"Capítulo de {course.nome}:",
-        choices=[
-            questionary.Choice(
-                f"{chapter.ordem if chapter.ordem else '—'} · {chapter.nome} (ID {chapter.id})",
-                value=chapter.id,
-            )
-            for chapter in course.chapters
-        ],
-    ).ask()
-    if chapter_id is None:
-        raise SystemExit(1)
-    return course_id, int(chapter_id)
+    chapter = _select_from_searchable(
+        list(course.chapters),
+        search_prompt="Buscar capítulo:",
+        select_prompt=f"Capítulo de {course.nome}:",
+        label=lambda ch: (
+            f"{ch.ordem if ch.ordem else '—'} · {ch.nome} (ID {ch.id})"
+        ),
+        blob=lambda ch: f"{ch.nome} {ch.id} {ch.ordem}",
+        empty_msg="Nenhum capítulo com esse trecho. Tente de novo.",
+    )
+    return course_id, int(chapter.id)
 
 
 def ask_curso_id() -> int:
@@ -466,7 +518,12 @@ def ask_curso_id() -> int:
             console.print(f"[red]{exc}[/red]")
 
 
-def show_curso(curso: CursoInfo, *, last_order: int | None = None) -> None:
+def show_curso(
+    curso: CursoInfo,
+    *,
+    last_order: int | None = None,
+    n_capitulos: int = 0,
+) -> None:
     table = _make_table("Curso confirmado", show_header=False)
     table.add_column("Campo", style="bold", no_wrap=True)
     table.add_column("Valor")
@@ -476,10 +533,78 @@ def show_curso(curso: CursoInfo, *, last_order: int | None = None) -> None:
         table.add_row("Capítulos existentes", "Nenhum")
         table.add_row("Ordem sugerida", "1")
     else:
+        table.add_row("Capítulos existentes", str(n_capitulos))
         table.add_row("Última ordem existente", str(last_order))
         table.add_row("Ordem sugerida para o novo capítulo", str(last_order + 1))
     console.print(table)
     _gap()
+
+
+def show_curso_chapters(capitulos: list[CapituloInfo]) -> None:
+    """Tabela dos capítulos que já estão no curso (ordem, nome, ID)."""
+    if not capitulos:
+        console.print("[dim]Este curso ainda não tem capítulos.[/dim]")
+        _gap()
+        return
+    table = _make_table(f"Capítulos no curso ({len(capitulos)})")
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("Capítulo", overflow="fold")
+    table.add_column("ID", justify="right", no_wrap=True)
+    for ordem, nome, ident in curso_chapter_rows(capitulos):
+        table.add_row(ordem, nome, ident)
+    console.print(table)
+    _gap()
+
+
+def curso_chapter_rows(capitulos: list[CapituloInfo]) -> list[tuple[str, str, str]]:
+    """Linhas (ordem, nome, id) ordenadas para a tabela do curso."""
+    ordered = sorted(capitulos, key=lambda c: (c.ordem, c.nome.casefold()))
+    return [
+        (str(chapter.ordem) if chapter.ordem else "—", chapter.nome, str(chapter.id))
+        for chapter in ordered
+    ]
+
+
+def confirm_curso(
+    curso: CursoInfo,
+    capitulos: list[CapituloInfo],
+    *,
+    prompt: str = "Este é o curso certo?",
+) -> bool:
+    """Mostra o curso, a lista de capítulos e pede confirmação.
+
+    True = seguir com este curso. False = escolher outro.
+    """
+    last_order = max((c.ordem for c in capitulos), default=0)
+    show_curso(
+        curso,
+        last_order=last_order if capitulos else None,
+        n_capitulos=len(capitulos),
+    )
+    show_curso_chapters(capitulos)
+    return ask_yes_no(prompt, default=True)
+
+
+def ask_confirmed_curso(
+    portal: PortalClient,
+    catalog: CatalogStore,
+    *,
+    confirm_prompt: str = "Este é o curso certo?",
+) -> tuple[CursoInfo, list[CapituloInfo]]:
+    """Pede o curso, mostra o que já tem lá e só segue depois da confirmação."""
+    while True:
+        curso_id = ask_curso_id()
+        try:
+            curso = portal.inspect_curso(curso_id)
+            capitulos = portal.list_capitulos(curso_id)
+            catalog.upsert_course(curso, capitulos)
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]Não foi possível ler o curso: {exc}[/red]")
+            continue
+        if confirm_curso(curso, capitulos, prompt=confirm_prompt):
+            return curso, capitulos
+        console.print("[yellow]Ok, informe outro curso.[/yellow]")
+        _gap()
 
 
 def ask_new_chapter_details(suggested_order: int) -> tuple[str, str, int]:
@@ -492,7 +617,7 @@ def ask_new_chapter_details(suggested_order: int) -> tuple[str, str, int]:
         if nome is None:
             raise SystemExit(1)
         bunny_url = questionary.text(
-            "URL ou ID da pasta Bunny:",
+            "Bunny Url:",
             instruction="A pasta deve já existir no Bunny.",
         ).ask()
         if bunny_url is None:
@@ -1327,7 +1452,7 @@ def _ask_batch_chapter_fields(*, default_order: int, defaults=None):
     if defaults is not None:
         bunny_default = defaults.bunny_url or defaults.bunny_folder_id
     bunny_url = questionary.text(
-        "URL ou ID da pasta Bunny:",
+        "Bunny Url:",
         default=bunny_default,
         instruction="A pasta deve já existir no Bunny.",
     ).ask()
