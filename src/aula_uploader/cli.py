@@ -21,7 +21,6 @@ from aula_uploader.runner import build_state, executar_plano
 from aula_uploader.session import (
     PORTAL_LABELS,
     clear_all_sessions,
-    clear_session,
     ensure_authenticated,
 )
 from aula_uploader.state import UploadState

@@ -50,7 +50,6 @@ def detect_ollama(host: str = "http://127.0.0.1:11434", timeout: float = 1.5) ->
         reachable = False
 
     recommended = None
-    lower = [m.lower() for m in models]
     for cand in RECOMMENDED_MODELS:
         for full in models:
             if full.lower().startswith(cand):
