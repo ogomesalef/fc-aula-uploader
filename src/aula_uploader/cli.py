@@ -8,7 +8,8 @@ from pathlib import Path
 
 from rich.console import Console
 
-from aula_uploader import __version__
+from aula_uploader import __version__, tui
+from aula_uploader.batch import BatchChapterDraft
 from aula_uploader.catalog import CatalogStore
 from aula_uploader.media import (
     cleanup_temp,
@@ -19,18 +20,70 @@ from aula_uploader.media import (
 from aula_uploader.naming import listar_videos
 from aula_uploader.ollama_client import detect_ollama
 from aula_uploader.plan import montar_plano, parse_capitulo_id
-from aula_uploader.portal_client import CapituloResumo
+from aula_uploader.portal_client import CapituloResumo, ConteudoLinha, PortalClient
 from aula_uploader.runner import build_state, executar_plano
 from aula_uploader.session import (
     PORTAL_LABELS,
     clear_all_sessions,
     ensure_authenticated,
     has_saved_session,
+    resolve_portal_key,
 )
 from aula_uploader.state import UploadState
-from aula_uploader import tui
 
 console = Console()
+
+
+def _authenticate(args: argparse.Namespace) -> PortalClient:
+    """Login dos comandos não interativos.
+
+    Sem `--use-env`, usuário e senha são digitados aqui mesmo: um comando
+    agendado não deve autenticar em silêncio com o `.env` de outra pessoa.
+    """
+    use_env = bool(getattr(args, "use_env", False))
+    if not use_env:
+        console.print("[dim]Use --use-env para ler usuário e senha do .env.[/dim]")
+    return ensure_authenticated(
+        args.portal,
+        log=lambda m: console.print(m),
+        persist_session=False,
+        use_saved_session=has_saved_session(args.portal),
+        allow_env=use_env,
+    )
+
+
+def _fetch_capitulo(
+    portal: PortalClient,
+    portal_key: str,
+    capitulo_id: int,
+) -> tuple[PortalClient, list[ConteudoLinha], CapituloResumo]:
+    """Lê o capítulo, refazendo o login uma vez se a sessão tiver caído."""
+    try:
+        portal.ensure_authenticated(log=lambda m: console.print(f"  {m}"))
+        return (
+            portal,
+            portal.listar_conteudos_tabela(capitulo_id),
+            portal.inspect_capitulo(capitulo_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Sessão inválida ou capítulo inacessível: {exc}[/red]")
+        _close_portal(portal)
+        novo = tui.ask_login(portal_key)
+        return (
+            novo,
+            novo.listar_conteudos_tabela(capitulo_id),
+            novo.inspect_capitulo(capitulo_id),
+        )
+
+
+def _close_portal(portal: object | None) -> None:
+    """Fecha o client sem deixar erro de rede mascarar o erro original."""
+    if portal is None:
+        return
+    try:
+        portal.close()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001, S110 - fechar client nunca deve falhar o comando
+        pass
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -63,7 +116,8 @@ def main(argv: list[str] | None = None) -> int:
     p_upload.add_argument("-y", "--yes", action="store_true", help="Não pedir confirmação")
 
     p_resume = sub.add_parser("resume", help="Retoma upload pendente/falho")
-    p_resume.add_argument("--portal", required=True, choices=list(PORTAL_LABELS))
+    _add_portal(p_resume)
+    _add_use_env(p_resume)
     p_resume.add_argument("--capitulo", required=True, type=parse_capitulo_id)
 
     args = parser.parse_args(argv)
@@ -86,8 +140,35 @@ def main(argv: list[str] | None = None) -> int:
     return 1
 
 
+def _portal_help() -> str:
+    pares = " · ".join(
+        f"{num}/{slug} = {PORTAL_LABELS[slug]}"
+        for num, slug in (("1", "fullcycle"), ("2", "devops"))
+    )
+    return f"Portal de destino ({pares})"
+
+
+def _add_portal(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--portal",
+        required=True,
+        type=resolve_portal_key,
+        metavar="{1,2}",
+        help=_portal_help(),
+    )
+
+
+def _add_use_env(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--use-env",
+        action="store_true",
+        help="Usar usuário e senha do .env (sem esta flag, são pedidos no terminal)",
+    )
+
+
 def _add_common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--portal", required=True, choices=list(PORTAL_LABELS))
+    _add_portal(p)
+    _add_use_env(p)
     p.add_argument("--capitulo", required=True, type=parse_capitulo_id)
     p.add_argument("--fonte", required=True, type=Path, help="Pasta ou .zip")
     p.add_argument("--recursivo", action="store_true")
@@ -226,15 +307,9 @@ def cmd_assistente(args: argparse.Namespace) -> int:
             aulas.sort(key=lambda a: (a.ordem, a.path.name))
 
             console.print("\n[dim]Consultando o capítulo no portal…[/dim]")
-            try:
-                portal.ensure_authenticated(log=lambda m: console.print(f"  {m}"))
-                existentes = portal.listar_conteudos_tabela(capitulo_id)
-                capitulo = portal.inspect_capitulo(capitulo_id)
-            except Exception as exc:  # noqa: BLE001
-                console.print(f"[red]Sessão inválida ou capítulo inacessível: {exc}[/red]")
-                portal = tui.ask_login(portal_key)
-                existentes = portal.listar_conteudos_tabela(capitulo_id)
-                capitulo = portal.inspect_capitulo(capitulo_id)
+            portal, existentes, capitulo = _fetch_capitulo(
+                portal, portal_key, capitulo_id
+            )
 
             plano = montar_plano(aulas, existentes, force=bool(args.force))
 
@@ -270,6 +345,7 @@ def cmd_assistente(args: argparse.Namespace) -> int:
                 portal=portal_key,
                 capitulo_id=capitulo_id,
                 pasta=pasta,
+                fonte=fonte,
                 plano=plano,
                 status_criacao=status,
                 force=bool(args.force),
@@ -299,11 +375,7 @@ def cmd_assistente(args: argparse.Namespace) -> int:
                 preferred_mode = next_action
     finally:
         cleanup_temp(temp_dir)
-        if portal is not None:
-            try:
-                portal.close()
-            except Exception:  # noqa: BLE001
-                pass
+        _close_portal(portal)
 
 
 def _assistente_batch(
@@ -341,7 +413,9 @@ def _assistente_batch(
     if not tui.ask_yes_no("Este é o curso certo para o lote?", default=True):
         return None
 
-    chapters = tui.build_batch_chapters(suggested_order=last_order + 1)
+    chapters = tui.build_batch_chapters(
+        suggested_order=last_order + 1, existing=existentes
+    )
     if not chapters:
         console.print("[yellow]Lote cancelado.[/yellow]")
         return None
@@ -368,11 +442,7 @@ def _assistente_batch(
         f"[green]{criar_n}[/green] criar  ·  "
         f"[magenta]{reutilizar_n}[/magenta] já existem (só vídeos)"
     )
-    _gap = getattr(tui, "_gap", None)
-    if _gap:
-        _gap()
-    else:
-        console.print()
+    console.print()
     if not tui.ask_yes_no("Aplicar no portal agora?", default=True):
         console.print("[yellow]Lote cancelado antes de criar.[/yellow]")
         return None
@@ -478,6 +548,7 @@ def _assistente_batch(
             portal=portal_key,
             capitulo_id=chapter.capitulo_id,
             pasta=chapter.pasta or Path("."),
+            fonte=chapter.fonte,
             plano=chapter.plano,
             status_criacao=plan.status_criacao,
             force=bool(args.force),
@@ -536,14 +607,11 @@ def _assistente_batch(
     return exit_code, next_action
 
 
-def _cleanup_batch_temps(chapters) -> None:
-    from aula_uploader.media import cleanup_temp
-
+def _cleanup_batch_temps(chapters: list[BatchChapterDraft]) -> None:
     for chapter in chapters:
-        temp = getattr(chapter, "_temp_dir", None)
-        if temp is not None:
-            cleanup_temp(temp)
-            setattr(chapter, "_temp_dir", None)
+        if chapter.temp_dir is not None:
+            cleanup_temp(chapter.temp_dir)
+            chapter.temp_dir = None
 
 
 def _assistente_escolher_capitulo(
@@ -694,26 +762,23 @@ def _run_noninteractive(
     args: argparse.Namespace, *, execute: bool, assume_yes: bool
 ) -> int:
     temp_dir = None
+    portal = None
+    fonte = normalize_user_path(str(args.fonte))
     try:
-        pasta, temp_dir = resolve_source(normalize_user_path(str(args.fonte)))
+        pasta, temp_dir = resolve_source(fonte)
         aulas = listar_videos(pasta, recursivo=bool(args.recursivo))
         if not aulas:
             console.print("[red]Nenhum vídeo encontrado.[/red]")
             return 1
         enrich_durations(aulas)
-        portal = ensure_authenticated(
-            args.portal,
-            log=lambda m: console.print(m),
-            persist_session=False,
-            use_saved_session=has_saved_session(args.portal),
-        )
+        portal = _authenticate(args)
         capitulo = portal.inspect_capitulo(args.capitulo)
         existentes = portal.listar_conteudos_tabela(args.capitulo)
         plano = montar_plano(aulas, existentes, force=bool(args.force))
         tui.show_destino(
             portal_key=args.portal,
             capitulo=capitulo,
-            pasta=normalize_user_path(str(args.fonte)),
+            pasta=fonte,
             total=len(aulas),
         )
         tui.show_plan_table(plano)
@@ -729,6 +794,7 @@ def _run_noninteractive(
             portal=args.portal,
             capitulo_id=args.capitulo,
             pasta=pasta,
+            fonte=fonte,
             plano=plano,
             status_criacao=status,
             force=bool(args.force),
@@ -748,6 +814,7 @@ def _run_noninteractive(
         return 1
     finally:
         cleanup_temp(temp_dir)
+        _close_portal(portal)
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
@@ -762,66 +829,70 @@ def cmd_resume(args: argparse.Namespace) -> int:
         return 0
 
     from aula_uploader.naming import AulaArquivo
-    from aula_uploader.plan import Acao, PlanoItem
+    from aula_uploader.plan import Acao, PlanoItem, index_existentes, match_key
 
-    pasta = Path(state.pasta)
-    if not pasta.is_dir():
-        console.print(f"[red]Pasta do estado não existe mais: {pasta}[/red]")
-        return 1
+    temp_dir = None
+    portal = None
+    try:
+        pasta = Path(state.pasta)
+        if not pasta.is_dir():
+            # Origem era um .zip: o temporário da execução anterior já sumiu.
+            if not state.fonte:
+                console.print(f"[red]Pasta do estado não existe mais: {pasta}[/red]")
+                return 1
+            console.print(f"[dim]Reabrindo a origem: {state.fonte}[/dim]")
+            pasta, temp_dir = resolve_source(state.fonte)
 
-    portal = ensure_authenticated(
-        args.portal,
-        log=lambda m: console.print(m),
-        persist_session=False,
-        use_saved_session=has_saved_session(args.portal),
-    )
-    existentes = {
-        l.titulo.strip().lower(): l
-        for l in portal.listar_conteudos_tabela(args.capitulo)
-    }
-    plano: list[PlanoItem] = []
-    for item in state.items:
-        if item.status not in {"pending", "failed"}:
-            continue
-        path = pasta / item.arquivo
-        if not path.exists():
-            # busca recursiva simples pelo nome
-            matches = list(pasta.rglob(item.arquivo))
-            if not matches:
-                console.print(f"[red]Arquivo ausente: {item.arquivo}[/red]")
+        portal = _authenticate(args)
+        existentes = index_existentes(portal.listar_conteudos_tabela(args.capitulo))
+        plano: list[PlanoItem] = []
+        for item in state.items:
+            if item.status not in {"pending", "failed"}:
                 continue
-            path = matches[0]
-        aula = AulaArquivo(
-            path=path,
-            ordem=item.ordem,
-            titulo=item.titulo,
-            tamanho_bytes=path.stat().st_size,
-        )
-        ex = existentes.get(item.titulo.strip().lower())
-        if ex and ex.tem_video and not state.force:
-            plano.append(PlanoItem(aula=aula, acao=Acao.PULAR, existente_id=ex.id))
-        elif ex:
-            plano.append(
-                PlanoItem(
-                    aula=aula,
-                    acao=Acao.FORCAR if state.force else Acao.ENVIAR,
-                    existente_id=ex.id,
-                )
+            path = pasta / item.arquivo
+            if not path.exists():
+                matches = list(pasta.rglob(item.arquivo))
+                if not matches:
+                    console.print(f"[red]Arquivo ausente: {item.arquivo}[/red]")
+                    continue
+                path = matches[0]
+            aula = AulaArquivo(
+                path=path,
+                ordem=item.ordem,
+                titulo=item.titulo,
+                tamanho_bytes=path.stat().st_size,
             )
-        else:
-            plano.append(PlanoItem(aula=aula, acao=Acao.CRIAR))
+            ex = existentes.get(match_key(item.titulo))
+            if ex and ex.tem_video and not state.force:
+                plano.append(PlanoItem(aula=aula, acao=Acao.PULAR, existente_id=ex.id))
+            elif ex:
+                plano.append(
+                    PlanoItem(
+                        aula=aula,
+                        acao=Acao.FORCAR if state.force else Acao.ENVIAR,
+                        existente_id=ex.id,
+                    )
+                )
+            else:
+                plano.append(PlanoItem(aula=aula, acao=Acao.CRIAR))
 
-    ok, pulados, falhas = executar_plano(
-        portal,
-        capitulo_id=args.capitulo,
-        plano=plano,
-        state=state,
-        status_criacao=state.status_criacao,
-        log=lambda m: console.print(m),
-        only_pending=True,
-    )
-    console.print(f"Concluído: {ok} ok · {pulados} pulados · {len(falhas)} falhas")
-    return 1 if falhas else 0
+        ok, pulados, falhas = executar_plano(
+            portal,
+            capitulo_id=args.capitulo,
+            plano=plano,
+            state=state,
+            status_criacao=state.status_criacao,
+            log=lambda m: console.print(m),
+            only_pending=True,
+        )
+        console.print(f"Concluído: {ok} ok · {pulados} pulados · {len(falhas)} falhas")
+        return 1 if falhas else 0
+    except (FileNotFoundError, RuntimeError, OSError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 1
+    finally:
+        cleanup_temp(temp_dir)
+        _close_portal(portal)
 
 
 if __name__ == "__main__":

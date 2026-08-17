@@ -1,7 +1,9 @@
+import unicodedata
 from pathlib import Path
 
 from aula_uploader.batch import (
     BatchChapterDraft,
+    batch_reuse_warnings,
     batch_summary_rows,
     find_existing_chapter,
     normalize_chapter_name,
@@ -26,6 +28,47 @@ def test_find_existing_chapter_by_name():
     assert found is not None
     assert found.id == 20
     assert find_existing_chapter("Outro", existentes) is None
+
+
+def test_find_existing_chapter_ignora_forma_unicode():
+    existentes = [
+        CapituloInfo(
+            id=30,
+            nome=unicodedata.normalize("NFC", "Introdução"),
+            ordem=1,
+            curso_id=1,
+        )
+    ]
+    procurado = unicodedata.normalize("NFD", "introdução")
+    assert find_existing_chapter(procurado, existentes).id == 30
+
+
+def test_validate_batch_recusa_ordem_ja_usada_no_curso():
+    existentes = [CapituloInfo(id=10, nome="Já no curso", ordem=5, curso_id=1)]
+    chapters = [BatchChapterDraft(nome="Novo", ordem=5, bunny_folder_id="b1")]
+    errors = validate_batch_chapters(chapters, existing=existentes)
+    assert any("já é do capítulo" in e for e in errors)
+
+
+def test_validate_batch_aceita_ordem_do_capitulo_reutilizado():
+    existentes = [CapituloInfo(id=10, nome="Threat Model", ordem=5, curso_id=1)]
+    chapters = [BatchChapterDraft(nome="threat model", ordem=5, bunny_folder_id="b1")]
+    assert validate_batch_chapters(chapters, existing=existentes) == []
+
+
+def test_batch_reuse_warnings_avisa_que_bunny_e_ignorada():
+    existentes = [CapituloInfo(id=10, nome="Threat Model", ordem=5, curso_id=1)]
+    chapters = [BatchChapterDraft(nome="Threat Model", ordem=9, bunny_folder_id="b1")]
+    avisos = batch_reuse_warnings(chapters, existentes)
+    assert len(avisos) == 1
+    assert "não será aplicada" in avisos[0]
+    assert "continua 5" in avisos[0]
+
+
+def test_batch_reuse_warnings_vazio_para_capitulo_novo():
+    existentes = [CapituloInfo(id=10, nome="Outro", ordem=5, curso_id=1)]
+    chapters = [BatchChapterDraft(nome="Novo", ordem=6, bunny_folder_id="b1")]
+    assert batch_reuse_warnings(chapters, existentes) == []
 
 
 def test_validate_batch_rejects_duplicate_bunny_and_order():
@@ -81,7 +124,7 @@ def test_batch_summary_marks_existing_chapter():
         bunny_folder_id="b1",
         capitulo_id=99,
         already_existed=True,
-        pasta=Path("/tmp/x"),
+        pasta=Path("videos/cap-3"),
         plano=[
             PlanoItem(
                 aula=AulaArquivo(path=Path("a.mp4"), ordem=1, titulo="Aula"),

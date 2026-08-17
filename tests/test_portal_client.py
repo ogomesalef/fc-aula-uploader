@@ -1,7 +1,6 @@
 import pytest
 
-from aula_uploader.portal_client import PortalClient, ConteudoData
-
+from aula_uploader.portal_client import ConteudoData, PortalClient
 
 LOGIN_HTML = """
 <html><body>

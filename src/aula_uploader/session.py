@@ -5,8 +5,8 @@ from __future__ import annotations
 import getpass
 import os
 import stat
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -19,14 +19,36 @@ ALLOWED_HOSTS = {
 }
 
 PORTAL_LABELS = {
-    "fullcycle": "Portal 1",
-    "devops": "Portal 2",
+    "fullcycle": "Full Cycle",
+    "devops": "DevOps Pro",
 }
 
 DEFAULT_URLS = {
     "fullcycle": "https://portal.fullcycle.com.br",
     "devops": "https://portal.devopspro.com.br",
 }
+
+
+PORTAL_ALIASES = {
+    "1": "fullcycle",
+    "2": "devops",
+    "fullcycle": "fullcycle",
+    "fc": "fullcycle",
+    "devops": "devops",
+    "devopspro": "devops",
+}
+
+
+def resolve_portal_key(value: str) -> str:
+    """Aceita `1`/`2` e os slugs internos, que também nomeiam o arquivo de estado."""
+    key = PORTAL_ALIASES.get(str(value).strip().casefold())
+    if key is None:
+        opcoes = " · ".join(
+            f"{num} ou {slug} = {PORTAL_LABELS[slug]}"
+            for num, slug in (("1", "fullcycle"), ("2", "devops"))
+        )
+        raise ValueError(f"Portal inválido: {value!r}. Use {opcoes}")
+    return key
 
 
 def project_root() -> Path:
@@ -122,8 +144,18 @@ def prompt_credentials_if_needed(
     username: str = "",
     password: str = "",
     allow_empty_password: bool = False,
+    allow_env: bool = True,
 ) -> tuple[str, str, str]:
+    """Resolve base, usuário e senha.
+
+    Com ``allow_env=False`` o ``.env`` só fornece a URL do portal; usuário e
+    senha passam a ser sempre digitados, para nenhum comando logar em silêncio
+    com credenciais que o operador não escolheu ali.
+    """
     base, env_user, env_pass = get_credentials(portal_key)
+    if not allow_env:
+        env_user = ""
+        env_pass = ""
     user = username or env_user
     pwd = password or env_pass
     if not user:
@@ -152,6 +184,7 @@ def build_client(
     password: str = "",
     persist_session: bool = False,
     use_saved_session: bool = False,
+    allow_env: bool = True,
 ) -> PortalClient:
     """Monta o client.
 
@@ -164,6 +197,7 @@ def build_client(
         username=username,
         password=password,
         allow_empty_password=use_saved_session and has_saved_session(portal_key),
+        allow_env=allow_env,
     )
     path = None
     if persist_session or use_saved_session:
@@ -188,6 +222,7 @@ def ensure_authenticated(
     force: bool = False,
     persist_session: bool = False,
     use_saved_session: bool = False,
+    allow_env: bool = True,
 ) -> PortalClient:
     portal = build_client(
         portal_key,
@@ -195,6 +230,7 @@ def ensure_authenticated(
         password=password,
         persist_session=persist_session,
         use_saved_session=use_saved_session,
+        allow_env=allow_env,
     )
     portal.ensure_authenticated(log=log, force=force)
     return portal

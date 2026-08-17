@@ -7,6 +7,7 @@ import shutil
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 # Preferência para tarefas curtas de normalização de texto. Qwen 2.5 7B é
 # pequeno, multilíngue e segue JSON bem; modelos Whisper não servem para esta
@@ -36,20 +37,34 @@ def ollama_binary() -> str | None:
     return shutil.which("ollama")
 
 
+def _api_url(host: str, endpoint: str) -> str:
+    """Monta a URL da API local, recusando esquemas fora de http(s).
+
+    O host vem de config/ambiente; sem essa checagem um `file://` ou `ftp://`
+    seria aberto por urllib.
+    """
+    parsed = urlparse(host)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError(f"Host do Ollama inválido: {host}")
+    return f"{host.rstrip('/')}{endpoint}"
+
+
 def detect_ollama(host: str = "http://127.0.0.1:11434", timeout: float = 1.5) -> OllamaStatus:
     installed = ollama_binary() is not None
     models: list[str] = []
     reachable = False
     try:
-        req = urllib.request.Request(f"{host.rstrip('/')}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        req = urllib.request.Request(  # noqa: S310 - http(s) validado em _api_url
+            _api_url(host, "/api/tags"), method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - http(s) validado
             payload = json.loads(resp.read().decode("utf-8"))
         reachable = True
         for item in payload.get("models", []):
             name = item.get("name") or item.get("model")
             if name:
                 models.append(str(name))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
         reachable = False
 
     recommended = None
@@ -120,13 +135,13 @@ def suggest_titles(
             "options": {"temperature": 0.1},
         }
     ).encode("utf-8")
-    req = urllib.request.Request(
-        f"{host.rstrip('/')}/api/generate",
+    req = urllib.request.Request(  # noqa: S310 - http(s) validado em _api_url
+        _api_url(host, "/api/generate"),
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - http(s) validado
         payload = json.loads(resp.read().decode("utf-8"))
     text = payload.get("response", "")
     data = json.loads(text) if isinstance(text, str) else text

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -57,16 +58,22 @@ class CatalogStore:
             return {}
 
     def _save(self) -> None:
+        """Grava de forma atômica: a sync em background pode escrever junto."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"courses": [asdict(course) for course in self.courses()]}
-        self.path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
         try:
-            self.path.chmod(0o600)
-        except OSError:
-            pass
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            try:
+                tmp.chmod(0o600)
+            except OSError:
+                pass
+            os.replace(tmp, self.path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def courses(self) -> list[CatalogCourse]:
         with self._lock:
@@ -138,7 +145,8 @@ class CatalogStore:
         chapters = portal.list_capitulos(course_id)
         self.upsert_course(curso, chapters)
         course = self.get_course(course_id)
-        assert course is not None
+        if course is None:  # pragma: no cover - upsert_course sempre grava
+            raise RuntimeError(f"Curso {course_id} não entrou no catálogo local")
         return course
 
     def sync_course_in_background(self, portal: PortalClient, course_id: int) -> None:
@@ -146,21 +154,21 @@ class CatalogStore:
 
         base_url = portal.base_url
         username = portal.username
-        password = portal.password
         cookies = [
             (cookie.name, cookie.value, cookie.domain, cookie.path)
             for cookie in portal.client.cookies.jar
         ]
 
         def sync() -> None:
-            background = PortalClient(base_url, username, password)
+            # Sem senha: a thread só reusa cookies, nunca faz login sozinha.
+            background = PortalClient(base_url, username, "")
             try:
                 for name, value, domain, path in cookies:
                     background.client.cookies.set(
                         name, value, domain=domain, path=path or "/"
                     )
                 self.sync_course(background, course_id)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 # Catálogo é conveniência local: nunca deve interromper upload.
                 pass
             finally:

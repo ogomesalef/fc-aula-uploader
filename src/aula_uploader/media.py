@@ -5,12 +5,18 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from aula_uploader.naming import VIDEO_EXTENSIONS
+if TYPE_CHECKING:
+    from aula_uploader.naming import AulaArquivo
+
+
+_URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+")
 
 
 def mask_url(url: str) -> str:
@@ -20,6 +26,17 @@ def mask_url(url: str) -> str:
     base = url.split("?", 1)[0]
     # Esconde Access Key IDs se aparecerem no path (improvável, mas seguro).
     return re.sub(r"AKIA[0-9A-Z]{16}", "AKIA****************", base)
+
+
+def mask_text(text: str) -> str:
+    """Mascara URLs dentro de uma mensagem livre.
+
+    Erros de rede costumam citar a URL inteira; sem isso uma assinatura S3
+    acabaria no terminal e no arquivo de estado.
+    """
+    if not text:
+        return ""
+    return _URL_RE.sub(lambda match: mask_url(match.group(0)), text)
 
 
 def format_bytes(n: int) -> str:
@@ -40,17 +57,23 @@ def format_duration(seconds: float | None) -> str:
     return f"{m:02d}:{s:02d}"
 
 
+def ffprobe_path() -> str | None:
+    return shutil.which("ffprobe")
+
+
 def ffprobe_available() -> bool:
-    return shutil.which("ffprobe") is not None
+    return ffprobe_path() is not None
 
 
 def probe_duration_seconds(path: Path) -> float | None:
-    if not ffprobe_available():
+    # Caminho absoluto resolvido no PATH: nada é passado por shell.
+    binario = ffprobe_path()
+    if binario is None:
         return None
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603 - argv fixo, sem shell
             [
-                "ffprobe",
+                binario,
                 "-v",
                 "error",
                 "-show_entries",
@@ -73,7 +96,7 @@ def probe_duration_seconds(path: Path) -> float | None:
         return None
 
 
-def enrich_durations(aulas: list) -> None:
+def enrich_durations(aulas: list[AulaArquivo]) -> None:
     for aula in aulas:
         if getattr(aula, "duracao_segundos", None) is None:
             aula.duracao_segundos = probe_duration_seconds(aula.path)
@@ -116,14 +139,14 @@ def is_zip(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() == ".zip"
 
 
-def resolve_source(path: Path) -> tuple[Path, Path | None]:
+def resolve_source(path: str | Path) -> tuple[Path, Path | None]:
     """Resolve pasta ou ZIP.
 
     Returns:
         (pasta_com_videos, temp_dir_ou_None). Se temp_dir não for None,
         o chamador deve limpar com ``cleanup_temp``.
     """
-    path = path.expanduser().resolve()
+    path = Path(path).expanduser().resolve()
     if path.is_dir():
         return path, None
     if is_zip(path):
@@ -138,12 +161,21 @@ def resolve_source(path: Path) -> tuple[Path, Path | None]:
     raise FileNotFoundError(f"Informe uma pasta ou um arquivo .zip: {path}")
 
 
+def _is_symlink_entry(info: zipfile.ZipInfo) -> bool:
+    """Detecta symlink gravado no ZIP (bits Unix no external_attr)."""
+    unix_mode = info.external_attr >> 16
+    return bool(unix_mode) and stat.S_ISLNK(unix_mode)
+
+
 def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
-    """Extrai evitando zip slip."""
+    """Extrai evitando zip slip e symlinks apontando para fora do destino."""
     dest = dest.resolve()
     for info in zf.infolist():
+        if _is_symlink_entry(info):
+            raise RuntimeError(f"Entrada ZIP inválida (symlink): {info.filename}")
         target = (dest / info.filename).resolve()
-        if not str(target).startswith(str(dest)):
+        # `is_relative_to` evita o bypass de prefixo (/tmp/foo vs /tmp/foobar).
+        if target != dest and not target.is_relative_to(dest):
             raise RuntimeError(f"Entrada ZIP inválida (zip slip): {info.filename}")
         zf.extract(info, dest)
 
@@ -151,9 +183,3 @@ def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
 def cleanup_temp(temp_dir: Path | None) -> None:
     if temp_dir and temp_dir.exists():
         shutil.rmtree(temp_dir, ignore_errors=True)
-
-
-def count_videos(pasta: Path, *, recursivo: bool = False) -> int:
-    aceitas = VIDEO_EXTENSIONS
-    it = pasta.rglob("*") if recursivo else pasta.iterdir()
-    return sum(1 for p in it if p.is_file() and p.suffix.lower() in aceitas)

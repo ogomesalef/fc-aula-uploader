@@ -34,7 +34,7 @@ Na primeira vez o assistente pede:
 
 Você pode copiar `.env.example` para `.env` com usuário e senha. O assistente **não** faz login silencioso: pergunta se quer digitar agora ou usar o `.env`.
 
-Sessão opcional fica só nesta máquina (`~/.config/aula-uploader/`). Para apagar:
+Salvar a sessão é opcional e o padrão é **não salvar**. Se você aceitar, ela fica só nesta máquina (`~/.config/aula-uploader/`). Para apagar:
 
 ```bash
 aula-uploader logout
@@ -50,7 +50,7 @@ aula-uploader logout
    - **lote:** vários capítulos de uma vez
 3. **Vídeos** — pasta ou `.zip` (o original não é alterado)
 4. **Nomes** — normalização local, Ollama ou edição manual; sempre dá para revisar
-5. **Plano** — criar, enviar vídeo ou pular (aula já existe com vídeo)
+5. **Plano** — criar, enviar vídeo ou pular (aula já existe com vídeo); títulos repetidos no lote viram aviso antes do envio
 6. **Upload** — progresso por aula; no fim, link do admin para conferir e menu para enviar mais ou encerrar
 
 Aulas novas nascem como **rascunho**, salvo se você escolher publicar.
@@ -60,7 +60,7 @@ Aulas novas nascem como **rascunho**, salvo se você escolher publicar.
 1. Confirme o curso
 2. Monte a lista: nome, ordem e URL Bunny de cada capítulo (Bunny não pode se repetir)
 3. Revise
-4. Capítulos com o **mesmo nome** no curso não são recriados — só entram os vídeos que ainda não estão lá
+4. Capítulos com o **mesmo nome** no curso não são recriados — só entram os vídeos que ainda não estão lá (a Bunny digitada não é aplicada nesse caso, e a ferramenta avisa)
 5. Vincule **à mão** a pasta/ZIP de cada capítulo
 6. Revise nomes por capítulo
 7. Uma escolha publicar/rascunho vale para o lote; o envio segue um capítulo por vez
@@ -87,19 +87,36 @@ Links úteis no admin:
 ```bash
 aula-uploader doctor
 aula-uploader assistente
-aula-uploader plan --portal <id> --capitulo 299 --fonte ./videos
-aula-uploader upload --portal <id> --capitulo 299 --fonte ./aulas.zip
-aula-uploader resume --portal <id> --capitulo 299
+aula-uploader plan --portal 1 --capitulo 299 --fonte ./videos
+aula-uploader upload --portal 1 --capitulo 299 --fonte ./aulas.zip --use-env
+aula-uploader resume --portal 1 --capitulo 299 --use-env
 ```
 
-Os IDs de `--portal` aparecem em `aula-uploader --help`. Sem subcomando, abre o assistente.
+Sem subcomando, abre o assistente. Em `--portal` valem `1`/`2` ou os slugs (`fullcycle`, `devops`); `aula-uploader --help` mostra o mapeamento.
+
+Por padrão esses comandos **pedem usuário e senha no terminal**, mesmo com `.env` presente. Passe `--use-env` para autorizar o login a partir do `.env` — útil em script, explícito no histórico.
+
+`resume` retoma o que ficou pendente ou falhou. Se a origem era um `.zip`, ele reabre o arquivo original — o diretório temporário da execução anterior não é necessário.
 
 ## Segurança
 
 - Credenciais e cookies **não** vão para o Git. Não faça commit de `.env`.
 - Logs mascaram URLs assinadas e possíveis Access Keys.
-- Só os hosts oficiais do portal são aceitos.
+- Só os hosts oficiais do portal são aceitos, sempre por HTTPS.
+- Redirects para fora do host do portal são bloqueados, então o cookie de sessão nunca sai dele.
+- ZIPs são extraídos com verificação de caminho (`zip slip`) e recusam entradas de symlink.
 - Confirmação antes de enviar (exceto `--yes` na CLI).
+
+Detalhes em [SECURITY.md](SECURITY.md).
+
+## Desenvolvimento
+
+```bash
+pip install -e ".[dev]"
+ruff check .
+pytest -q
+python scripts/secret_scan.py
+```
 
 ## Licença
 

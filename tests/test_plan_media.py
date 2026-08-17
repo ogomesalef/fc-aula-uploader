@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from aula_uploader.media import mask_url, resolve_source, cleanup_temp
+from aula_uploader.media import cleanup_temp, mask_text, mask_url, resolve_source
+from aula_uploader.naming import AulaArquivo
 from aula_uploader.plan import (
     Acao,
     montar_plano,
@@ -11,7 +12,6 @@ from aula_uploader.plan import (
     parse_capitulo_id,
     parse_curso_id,
 )
-from aula_uploader.naming import AulaArquivo
 from aula_uploader.portal_client import ConteudoLinha
 from aula_uploader.session import validate_base_url
 
@@ -83,6 +83,24 @@ def test_mask_url_strips_query():
     assert masked.endswith("/a.mp4")
 
 
+def test_mask_text_mascara_url_dentro_da_mensagem():
+    msg = (
+        "Server error '500' for url "
+        "'https://bucket.s3.amazonaws.com/v.mp4?X-Amz-Signature=abc123' "
+        "durante o upload"
+    )
+    masked = mask_text(msg)
+    assert "X-Amz-Signature" not in masked
+    assert "https://bucket.s3.amazonaws.com/v.mp4" in masked
+    assert masked.endswith("durante o upload")
+
+
+def test_mask_text_preserva_texto_sem_url():
+    assert mask_text("Falha ao salvar conteúdo (HTTP 500)") == (
+        "Falha ao salvar conteúdo (HTTP 500)"
+    )
+
+
 def test_mask_url_redacts_access_key_pattern():
     # Padrão artificial (não é chave real) para validar a máscara.
     token = "AKIA" + ("Z" * 16)
@@ -127,6 +145,16 @@ def test_resolve_zip(tmp_path):
         assert (pasta / "1-aula.mp4").exists() or list(pasta.rglob("*.mp4"))
     finally:
         cleanup_temp(temp)
+
+
+def test_resolve_source_aceita_caminho_em_texto(tmp_path):
+    # `resume` guarda a origem como string no estado.
+    videos = tmp_path / "videos"
+    videos.mkdir()
+    (videos / "1-aula.mp4").write_bytes(b"abc")
+    pasta, temp = resolve_source(str(videos))
+    assert temp is None
+    assert pasta == videos.resolve()
 
 
 def test_montar_plano_idempotente():

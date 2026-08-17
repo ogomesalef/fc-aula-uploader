@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 
@@ -90,17 +91,58 @@ def parse_bunny_folder_id(valor: str) -> str:
     return match.group(1)
 
 
+def match_key(titulo: str) -> str:
+    """Chave de comparação de títulos entre disco e portal.
+
+    Normaliza Unicode (o macOS entrega NFD, o portal devolve NFC), colapsa
+    espaços e ignora caixa — senão "Introdução" viraria uma aula duplicada.
+    """
+    normalizado = unicodedata.normalize("NFC", titulo)
+    return " ".join(normalizado.split()).casefold()
+
+
+def index_existentes(existentes: list[ConteudoLinha]) -> dict[str, ConteudoLinha]:
+    """Indexa por título; em caso de duplicata, a que já tem vídeo vence."""
+    mapa: dict[str, ConteudoLinha] = {}
+    for linha in existentes:
+        chave = match_key(linha.titulo)
+        atual = mapa.get(chave)
+        if atual is None or (linha.tem_video and not atual.tem_video):
+            mapa[chave] = linha
+    return mapa
+
+
+def titulos_duplicados(aulas: list[AulaArquivo]) -> dict[str, list[str]]:
+    """Títulos repetidos no mesmo lote, mapeados para os arquivos de origem.
+
+    Dois arquivos com o mesmo título criariam uma aula e sobrescreveriam o
+    vídeo da outra, então isso precisa aparecer antes do upload.
+    """
+    por_titulo: dict[str, list[str]] = {}
+    rotulo: dict[str, str] = {}
+    for aula in aulas:
+        chave = match_key(aula.titulo)
+        if not chave:
+            continue
+        rotulo.setdefault(chave, aula.titulo.strip())
+        por_titulo.setdefault(chave, []).append(aula.path.name)
+    return {
+        rotulo[chave]: arquivos
+        for chave, arquivos in por_titulo.items()
+        if len(arquivos) > 1
+    }
+
+
 def montar_plano(
     aulas: list[AulaArquivo],
     existentes: list[ConteudoLinha],
     *,
     force: bool = False,
 ) -> list[PlanoItem]:
-    mapa = {linha.titulo.strip().lower(): linha for linha in existentes}
+    mapa = index_existentes(existentes)
     plano: list[PlanoItem] = []
     for aula in aulas:
-        chave = aula.titulo.strip().lower()
-        existente = mapa.get(chave)
+        existente = mapa.get(match_key(aula.titulo))
         if existente is None:
             plano.append(PlanoItem(aula=aula, acao=Acao.CRIAR))
         elif existente.tem_video and force:

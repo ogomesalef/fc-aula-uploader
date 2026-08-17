@@ -6,9 +6,10 @@ import json
 import math
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -78,6 +79,7 @@ class ConteudoData:
 
 class PortalClient:
     CHUNK_SIZE = 90 * 1024 * 1024
+    MAX_REDIRECTS = 5
 
     def __init__(
         self,
@@ -93,8 +95,10 @@ class PortalClient:
         self.session_path = session_path
         self._auth_cached = False
         self._auth_cache_until = 0.0
+        # Redirects são seguidos manualmente para os cookies de sessão nunca
+        # saírem do host do portal (ver _follow).
         self.client = httpx.Client(
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=20.0,
             headers={
                 "User-Agent": (
@@ -114,6 +118,29 @@ class PortalClient:
 
     def __exit__(self, *args: object) -> None:
         self.close()
+
+    def _is_portal_url(self, url: httpx.URL) -> bool:
+        expected = urlparse(self.base_url).hostname or ""
+        return url.scheme == "https" and (url.host or "") == expected
+
+    def _follow(self, response: httpx.Response) -> httpx.Response:
+        """Segue redirects só dentro do host do portal."""
+        for _ in range(self.MAX_REDIRECTS):
+            if response.next_request is None:
+                return response
+            if not self._is_portal_url(response.next_request.url):
+                raise RuntimeError(
+                    "Redirect para fora do portal foi bloqueado "
+                    f"({response.next_request.url.host})"
+                )
+            response = self.client.send(response.next_request)
+        raise RuntimeError("Excesso de redirects do portal")
+
+    def _get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._follow(self.client.get(url, **kwargs))
+
+    def _post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._follow(self.client.post(url, **kwargs))
 
     def _load_session(self) -> None:
         if not self.session_path or not self.session_path.exists():
@@ -160,14 +187,21 @@ class PortalClient:
         self._auth_cache_until = 0.0
 
     def save_session(self) -> None:
+        """Grava só os cookies de sessão do portal (nunca o jar inteiro)."""
         if not self.session_path:
             return
+        host = urlparse(self.base_url).hostname or ""
         cookies: list[dict[str, str]] = []
         for cookie in self.client.cookies.jar:
+            if cookie.name not in SESSION_COOKIE_NAMES:
+                continue
+            domain = (cookie.domain or "").lstrip(".")
+            if domain and not (host == domain or host.endswith(f".{domain}")):
+                continue
             cookies.append(
                 {
                     "name": cookie.name,
-                    "value": cookie.value,
+                    "value": cookie.value or "",
                     "domain": cookie.domain or "",
                     "path": cookie.path or "/",
                 }
@@ -188,15 +222,21 @@ class PortalClient:
         if not self._has_session_cookie():
             self._invalidate_auth_cache()
             return False
-        response = self.client.get(
-            f"{self.base_url}/admin/curso/",
-            follow_redirects=False,
-        )
-        if response.status_code in (301, 302, 303, 307, 308):
-            location = response.headers.get("location", "").lower()
-            ok = "login" not in location
-        elif response.status_code == 200:
+        # Sem _get: o redirect aqui é o próprio sinal de sessão expirada.
+        response = self.client.get(f"{self.base_url}/admin/curso/")
+        if response.status_code == 200:
             ok = True
+        elif response.status_code in (301, 302, 303, 307, 308):
+            # Só conta como autenticado se continuar dentro do admin do portal:
+            # sessão expirada redireciona para /login, e um Location externo
+            # nunca deve valer como prova de sessão.
+            target = response.url.join(response.headers.get("location", ""))
+            path = (target.path or "").lower()
+            ok = (
+                self._is_portal_url(target)
+                and path.startswith("/admin")
+                and "login" not in path
+            )
         else:
             ok = False
         if ok:
@@ -224,13 +264,13 @@ class PortalClient:
     def login(self) -> None:
         self._clear_session_cookies()
         self._invalidate_auth_cache()
-        login_page = self.client.get(f"{self.base_url}/login")
+        login_page = self._get(f"{self.base_url}/login")
         login_page.raise_for_status()
         soup = BeautifulSoup(login_page.text, "html.parser")
         csrf_input = soup.find("input", {"name": "_csrf_token"})
         if not csrf_input or not csrf_input.get("value"):
             raise RuntimeError("Token CSRF de login não encontrado")
-        response = self.client.post(
+        response = self._post(
             f"{self.base_url}/login_check",
             data={
                 "_csrf_token": csrf_input["value"],
@@ -260,7 +300,7 @@ class PortalClient:
         return element.get("value", "")
 
     def _get_capitulo_token(self, form_url: str) -> str:
-        response = self.client.get(form_url)
+        response = self._get(form_url)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         token_input = soup.find("input", {"name": f"{CAPITULO_PREFIX}[_token]"})
@@ -270,7 +310,7 @@ class PortalClient:
 
     def inspect_curso(self, curso_id: int) -> CursoInfo:
         """Consulta e confirma o curso de destino antes de criar capítulo."""
-        response = self.client.get(f"{self.base_url}/admin/curso/{curso_id}/edit")
+        response = self._get(f"{self.base_url}/admin/curso/{curso_id}/edit")
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         title_input = soup.find("input", {"name": re.compile(r"\[nome\]$")})
@@ -285,7 +325,7 @@ class PortalClient:
         return CursoInfo(id=curso_id, nome=nome)
 
     def list_capitulos(self, curso_id: int) -> list[CapituloInfo]:
-        response = self.client.get(
+        response = self._get(
             f"{self.base_url}/admin/curso/capitulo/{curso_id}/curso"
         )
         response.raise_for_status()
@@ -359,7 +399,7 @@ class PortalClient:
         return max(created, key=lambda chapter: chapter.id)
 
     def _get_conteudo_token(self, form_url: str) -> str:
-        response = self.client.get(form_url)
+        response = self._get(form_url)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         token_input = soup.find("input", {"name": f"{CONTEUDO_PREFIX}[_token]"})
@@ -370,7 +410,7 @@ class PortalClient:
     def listar_conteudos_tabela(
         self, capitulo_id: int, *, incluir_deletados: bool = False
     ) -> list[ConteudoLinha]:
-        response = self.client.get(
+        response = self._get(
             f"{self.base_url}/admin/curso/conteudo/{capitulo_id}/capitulo"
         )
         response.raise_for_status()
@@ -422,7 +462,7 @@ class PortalClient:
     def inspect_capitulo(self, capitulo_id: int) -> CapituloResumo:
         """Consulta o capítulo e resolve nome real + curso (nome e ID)."""
         url = f"{self.base_url}/admin/curso/conteudo/{capitulo_id}/capitulo"
-        response = self.client.get(url)
+        response = self._get(url)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
@@ -480,7 +520,7 @@ class PortalClient:
         return None
 
     def _get_capitulo_nome(self, capitulo_id: int, curso_id: int) -> str:
-        response = self.client.get(
+        response = self._get(
             f"{self.base_url}/admin/curso/capitulo/{capitulo_id}/edit/{curso_id}/curso"
         )
         response.raise_for_status()
@@ -492,7 +532,7 @@ class PortalClient:
         last_status = None
         response = None
         for attempt in range(retries):
-            response = self.client.get(url)
+            response = self._get(url)
             if response.status_code == 200:
                 break
             last_status = response.status_code
@@ -528,7 +568,7 @@ class PortalClient:
         )
 
     def get_conteudo_capitulo_id(self, conteudo_id: int) -> int | None:
-        response = self.client.get(
+        response = self._get(
             f"{self.base_url}/admin/curso/conteudo/{conteudo_id}/edit"
         )
         response.raise_for_status()
@@ -547,7 +587,7 @@ class PortalClient:
 
     def _read_new_conteudo_form(self, capitulo_id: int) -> tuple[str, dict[str, str]]:
         form_url = f"{self.base_url}/admin/curso/conteudo/new/{capitulo_id}/capitulo"
-        response = self.client.get(form_url)
+        response = self._get(form_url)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         prefix = CONTEUDO_PREFIX
@@ -588,7 +628,7 @@ class PortalClient:
 
     def _read_edit_conteudo_extra_fields(self, conteudo_id: int) -> dict[str, str]:
         form_url = f"{self.base_url}/admin/curso/conteudo/{conteudo_id}/edit"
-        response = self.client.get(form_url)
+        response = self._get(form_url)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         prefix = CONTEUDO_PREFIX
@@ -683,9 +723,9 @@ class PortalClient:
         )
         ok_statuses = (302, 303, 500) if allow_500 else (302, 303)
         if response.status_code not in ok_statuses:
+            # Sem corpo da resposta: o HTML do admin pode conter token/CSRF.
             raise RuntimeError(
-                f"Salvar conteúdo falhou com status {response.status_code}: "
-                f"{response.text[:200]}"
+                f"Salvar conteúdo falhou (HTTP {response.status_code})"
             )
 
     def create_conteudo(self, capitulo_id: int, conteudo: ConteudoData) -> int:
@@ -708,8 +748,7 @@ class PortalClient:
         )
         if response.status_code not in (302, 303, 500):
             raise RuntimeError(
-                f"Criar conteúdo falhou com status {response.status_code}: "
-                f"{response.text[:200]}"
+                f"Criar conteúdo falhou (HTTP {response.status_code})"
             )
         alvo = conteudo.titulo.strip().lower()
         novos = [
@@ -744,7 +783,8 @@ class PortalClient:
 
     def salvar_url_s3_nivo(self, conteudo_id: int, s3_url: str) -> None:
         conteudo = self.get_conteudo(conteudo_id)
-        conteudo.url_s3_nivo = s3_url if "?" in s3_url else s3_url.split("?", 1)[0]
+        # O portal espera de volta exatamente a URL que ele devolveu no upload.
+        conteudo.url_s3_nivo = s3_url
         self.update_conteudo(conteudo_id, conteudo)
 
     def _conteudo_tem_video_na_tabela(
@@ -783,7 +823,7 @@ class PortalClient:
                 progress = round(100 * index / total_chunks)
                 if log:
                     log(f"  Chunk {index}/{total_chunks} ({progress}%)...")
-                response = self.client.post(
+                response = self._post(
                     upload_url,
                     files={"file": (filename, chunk_data, "application/octet-stream")},
                     data={

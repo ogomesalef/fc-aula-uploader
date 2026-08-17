@@ -1,3 +1,7 @@
+import json
+import stat
+import threading
+
 from aula_uploader.catalog import CatalogStore
 from aula_uploader.portal_client import CapituloInfo, CapituloResumo, CursoInfo
 
@@ -86,3 +90,45 @@ def test_sync_course_replaces_stale_chapters(tmp_path):
         (2, "Capítulo novo", 3),
     ]
     assert CatalogStore(tmp_path / "catalog.json").get_course(291).nome == "Curso atualizado"
+
+
+def test_catalog_escrita_e_atomica_com_upserts_concorrentes(tmp_path):
+    # A sync em background escreve no mesmo arquivo que o fluxo principal.
+    path = tmp_path / "catalog.json"
+    catalog = CatalogStore(path)
+    erros: list[Exception] = []
+
+    def gravar(course_id: int) -> None:
+        try:
+            for rodada in range(20):
+                catalog.upsert_course(
+                    CursoInfo(id=course_id, nome=f"Curso {course_id}"),
+                    [
+                        CapituloInfo(
+                            id=course_id * 100 + rodada,
+                            nome=f"Cap {rodada}",
+                            ordem=rodada,
+                            curso_id=course_id,
+                        )
+                    ],
+                )
+        except Exception as exc:  # noqa: BLE001 - reportado no assert
+            erros.append(exc)
+
+    threads = [threading.Thread(target=gravar, args=(cid,)) for cid in (1, 2, 3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert erros == []
+    # O arquivo final sempre é um JSON completo, nunca meio escrito.
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert {curso["id"] for curso in payload["courses"]} == {1, 2, 3}
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_catalog_tem_permissao_restrita(tmp_path):
+    path = tmp_path / "catalog.json"
+    CatalogStore(path).upsert_course(CursoInfo(id=1, nome="Curso"), [])
+    assert not path.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO)

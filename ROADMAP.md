@@ -8,16 +8,11 @@
 - Catálogo local de cursos/capítulos, atualizado ao abrir o curso
 - Pasta ou ZIP, normalização de nomes, revisão interativa
 - Ollama opcional (local)
-- Dois portais oficiais (hosts no código)
+- Dois portais oficiais (hosts fixos no código)
+- `resume` retomando inclusive quando a origem era um `.zip`
 
 ## Próximas funções (candidatas)
 
 - Replicar conteúdos entre capítulos (com dry-run e regras)
 - Retomar lote interrompido
 - Liberações por turma × data
-
-## Fora do escopo público
-
-- Financeiro e notas fiscais
-- CRM e dados de alunos
-- Scripts operacionais internos de uma organização

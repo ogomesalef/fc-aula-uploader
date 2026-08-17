@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
+from aula_uploader.media import mask_text
 from aula_uploader.plan import Acao, PlanoItem
 from aula_uploader.portal_client import PortalClient
 from aula_uploader.state import ItemState, UploadState
@@ -18,11 +19,13 @@ def build_state(
     plano: list[PlanoItem],
     status_criacao: str,
     force: bool,
+    fonte: str | Path = "",
 ) -> UploadState:
     state = UploadState(
         portal=portal,
         capitulo_id=capitulo_id,
         pasta=str(pasta),
+        fonte=str(fonte) if fonte else str(pasta),
         status_criacao=status_criacao,
         force=force,
         items=[
@@ -87,7 +90,10 @@ def executar_plano(
                 continue
 
             if item.acao in {Acao.ENVIAR, Acao.FORCAR}:
-                assert item.existente_id is not None
+                if item.existente_id is None:
+                    raise RuntimeError(
+                        f"Ação '{item.acao.value}' sem ID da aula existente"
+                    )
                 portal.upload_aula_video(
                     item.existente_id,
                     item.aula.path,
@@ -110,7 +116,8 @@ def executar_plano(
             ok += 1
             emit("  OK")
         except Exception as exc:  # noqa: BLE001 - relatório agregado
-            msg = str(exc)
+            # mask_text: a exceção pode citar a URL assinada do S3.
+            msg = mask_text(str(exc))
             emit(f"  FALHA: {msg}")
             state.mark(nome, "failed", conteudo_id=item.existente_id, erro=msg)
             falhas.append((item.aula.titulo, msg))

@@ -23,6 +23,7 @@ dependencies = [
 dev = [
   "pytest>=8.0",
   "pytest-httpx>=0.30",
+  "ruff>=0.6",
 ]
 
 [project.scripts]
@@ -34,3 +35,19 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = [
+  "E501",    # comprimento de linha fica a cargo do formatador
+  "B008",    # chamadas em default de argumento não são usadas aqui
+  "S101",    # assert é usado nos testes
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106"]  # senhas fictícias nos testes

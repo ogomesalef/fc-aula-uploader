@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from aula_uploader.naming import AulaArquivo
-from aula_uploader.plan import Acao, PlanoItem
+from aula_uploader.plan import Acao, PlanoItem, match_key
 from aula_uploader.portal_client import CapituloInfo
 
 
@@ -21,6 +21,9 @@ class BatchChapterDraft:
     capitulo_id: int | None = None
     already_existed: bool = False
     pasta: Path | None = None
+    fonte: str = ""
+    # Diretório de extração quando a origem é um .zip; precisa ser apagado.
+    temp_dir: Path | None = None
     aulas: list[AulaArquivo] = field(default_factory=list)
     plano: list[PlanoItem] = field(default_factory=list)
     skip_videos: bool = False
@@ -35,7 +38,8 @@ class BatchPlan:
 
 
 def normalize_chapter_name(nome: str) -> str:
-    return " ".join(nome.strip().split()).casefold()
+    """Mesma normalização de plan.match_key, aplicada a nomes de capítulo."""
+    return match_key(nome)
 
 
 def find_existing_chapter(
@@ -57,11 +61,28 @@ def validate_batch_chapters(
     *,
     existing: list[CapituloInfo] | None = None,
 ) -> list[str]:
-    """Retorna lista de erros de validação (vazia = ok)."""
+    """Retorna lista de erros de validação (vazia = ok).
+
+    ``existing`` são os capítulos que já estão no curso. Capítulos reutilizados
+    (mesmo nome) mantêm a ordem do portal; só os novos precisam de uma ordem
+    que ainda esteja livre.
+    """
     errors: list[str] = []
     if not chapters:
         errors.append("Inclua pelo menos um capítulo.")
         return errors
+
+    existentes = existing or []
+    reutilizados = {
+        found.id
+        for chapter in chapters
+        if (found := find_existing_chapter(chapter.nome, existentes)) is not None
+    }
+    ordens_ocupadas = {
+        chapter.ordem: chapter.nome
+        for chapter in existentes
+        if chapter.id not in reutilizados and chapter.ordem
+    }
 
     names: dict[str, int] = {}
     orders: dict[int, int] = {}
@@ -81,12 +102,18 @@ def validate_batch_chapters(
             else:
                 names[key] = index
 
+        ja_existe = find_existing_chapter(nome, existentes) is not None
         if chapter.ordem <= 0:
             errors.append(f"Capítulo #{index}: ordem inválida ({chapter.ordem}).")
         elif chapter.ordem in orders:
             errors.append(
                 f"Capítulo #{index}: ordem {chapter.ordem} repetida "
                 f"com #{orders[chapter.ordem]}."
+            )
+        elif not ja_existe and chapter.ordem in ordens_ocupadas:
+            errors.append(
+                f"Capítulo #{index}: ordem {chapter.ordem} já é do capítulo "
+                f"'{ordens_ocupadas[chapter.ordem]}' no curso."
             )
         else:
             orders[chapter.ordem] = index
@@ -103,6 +130,30 @@ def validate_batch_chapters(
             bunnies[bunny] = index
 
     return errors
+
+
+def batch_reuse_warnings(
+    chapters: list[BatchChapterDraft],
+    existing: list[CapituloInfo] | None,
+) -> list[str]:
+    """Avisos (não bloqueiam) sobre capítulos que serão reaproveitados.
+
+    A listagem do portal não expõe o ID da pasta Bunny do capítulo, então a
+    Bunny digitada aqui não é aplicada em capítulo que já existe.
+    """
+    avisos: list[str] = []
+    for chapter in chapters:
+        found = find_existing_chapter(chapter.nome, existing or [])
+        if found is None:
+            continue
+        aviso = (
+            f"“{chapter.nome}” já existe no curso (ID {found.id}): o capítulo "
+            "não é recriado, então a pasta Bunny informada não será aplicada"
+        )
+        if found.ordem and found.ordem != chapter.ordem:
+            aviso += f" e a ordem no portal continua {found.ordem}"
+        avisos.append(aviso + ".")
+    return avisos
 
 
 def validate_batch_folders(chapters: list[BatchChapterDraft]) -> list[str]:

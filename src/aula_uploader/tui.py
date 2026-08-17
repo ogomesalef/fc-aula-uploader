@@ -11,13 +11,21 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from aula_uploader.batch import BatchChapterDraft
 from aula_uploader.catalog import CatalogStore
 from aula_uploader.media import format_bytes, format_duration
 from aula_uploader.naming import AulaArquivo
 from aula_uploader.ollama_client import detect_ollama, suggest_titles
-from aula_uploader.plan import Acao, PlanoItem, parse_bunny_folder_id, parse_curso_id
-from aula_uploader.portal_client import CapituloResumo, CursoInfo
+from aula_uploader.plan import (
+    Acao,
+    PlanoItem,
+    parse_bunny_folder_id,
+    parse_curso_id,
+    titulos_duplicados,
+)
+from aula_uploader.portal_client import CapituloInfo, CapituloResumo, CursoInfo, PortalClient
 from aula_uploader.session import PORTAL_LABELS
+from aula_uploader.state import UploadState
 
 console = Console()
 TOTAL_STEPS = 6
@@ -127,7 +135,7 @@ def ask_portal() -> str:
     return escolha
 
 
-def ask_login(portal_key: str):
+def ask_login(portal_key: str) -> PortalClient:
     """Login no início do fluxo, pedindo credenciais de forma explícita."""
     from aula_uploader.session import (
         clear_session,
@@ -198,7 +206,7 @@ def ask_login(portal_key: str):
                 continue
             console.print("[dim]Digite de novo o usuário e a senha do portal.[/dim]")
             if not ask_yes_no("Tentar login novamente?", default=True):
-                raise SystemExit(1)
+                raise SystemExit(1) from exc
 
     if use_saved:
         console.print("[green]✓ Autenticado com sessão salva.[/green]")
@@ -207,7 +215,7 @@ def ask_login(portal_key: str):
     salvar = ask_yes_no(
         "Salvar sessão neste computador para as próximas execuções?\n"
         "  (Não = mais seguro · Sim = não pedir senha de novo)",
-        default=True,
+        default=False,
     )
     if salvar:
         path = enable_session_persistence(portal, portal_key)
@@ -641,7 +649,31 @@ def show_plan_table(plano: list[PlanoItem]) -> None:
     show_acao_legend(plano)
     if any(item.aula.ordem_inferida for item in plano):
         console.print("[dim]* ordem inferida (sem número claro no nome)[/dim]")
+    show_duplicate_warning([item.aula for item in plano])
     _gap()
+
+
+def show_duplicate_warning(aulas: list[AulaArquivo]) -> dict[str, list[str]]:
+    """Avisa sobre títulos repetidos e devolve o que encontrou."""
+    duplicados = titulos_duplicados(aulas)
+    if not duplicados:
+        return {}
+    linhas = "\n".join(
+        f"  [bold]{titulo}[/bold] — {', '.join(arquivos)}"
+        for titulo, arquivos in duplicados.items()
+    )
+    console.print(
+        Panel(
+            "Estes títulos se repetem no lote. O portal trataria como a mesma "
+            "aula, e um vídeo sobrescreveria o outro.\n\n"
+            f"{linhas}\n\n"
+            "[dim]Volte e renomeie antes de enviar.[/dim]",
+            title="Títulos duplicados",
+            border_style="red",
+            padding=(1, 2),
+        )
+    )
+    return duplicados
 
 
 def review_aulas(aulas: list[AulaArquivo]) -> list[AulaArquivo]:
@@ -827,6 +859,7 @@ def ask_publish_status(*, force_publicar: bool = False) -> str:
 
 
 def confirm_upload(plano: list[PlanoItem], *, publicar: bool) -> bool:
+    duplicados = titulos_duplicados([item.aula for item in plano])
     criar = sum(1 for p in plano if p.acao == Acao.CRIAR)
     enviar = sum(1 for p in plano if p.acao in {Acao.ENVIAR, Acao.FORCAR})
     pular = sum(1 for p in plano if p.acao == Acao.PULAR)
@@ -844,6 +877,15 @@ def confirm_upload(plano: list[PlanoItem], *, publicar: bool) -> bool:
         )
     )
     _gap()
+    if duplicados:
+        # Confirmar por engano aqui sobrescreveria vídeos; o default vira Não.
+        console.print(
+            f"[red]{len(duplicados)} título(s) duplicado(s) no lote.[/red]"
+        )
+        return ask_yes_no(
+            "Enviar mesmo assim? (recomendado: N, para renomear antes)",
+            default=False,
+        )
     return ask_yes_no(
         "Confirma o upload no portal? (N = cancelar)",
         default=True,
@@ -851,11 +893,11 @@ def confirm_upload(plano: list[PlanoItem], *, publicar: bool) -> bool:
 
 
 def run_upload_screen(
-    portal,
+    portal: PortalClient,
     *,
     capitulo_id: int,
     plano: list[PlanoItem],
-    state,
+    state: UploadState,
     status_criacao: str,
     portal_key: str = "",
     capitulo: CapituloResumo | None = None,
@@ -1170,11 +1212,15 @@ def show_batch_chapters_table(chapters) -> None:
     _gap()
 
 
-def build_batch_chapters(*, suggested_order: int):
+def build_batch_chapters(
+    *,
+    suggested_order: int,
+    existing: list[CapituloInfo] | None = None,
+) -> list[BatchChapterDraft] | None:
     """Monta a lista de capítulos do lote (nome, ordem, Bunny URL)."""
-    from aula_uploader.batch import validate_batch_chapters
+    from aula_uploader.batch import batch_reuse_warnings, validate_batch_chapters
 
-    chapters = []
+    chapters: list[BatchChapterDraft] = []
     next_order = suggested_order
 
     while True:
@@ -1211,7 +1257,7 @@ def build_batch_chapters(*, suggested_order: int):
         if not escolha or escolha == "cancel":
             return None
         if escolha == "done":
-            errors = validate_batch_chapters(chapters)
+            errors = validate_batch_chapters(chapters, existing=existing)
             if errors:
                 console.print("[red]Corrija antes de continuar:[/red]")
                 for err in errors:
@@ -1249,13 +1295,21 @@ def build_batch_chapters(*, suggested_order: int):
         "Confira nomes, ordens e pastas Bunny. Nenhuma Bunny pode se repetir.",
     )
     show_batch_chapters_table(chapters)
-    errors = validate_batch_chapters(chapters)
+    errors = validate_batch_chapters(chapters, existing=existing)
     if errors:
         for err in errors:
             console.print(f"[red]• {err}[/red]")
         return None
+    avisos = batch_reuse_warnings(chapters, existing)
+    if avisos:
+        console.print("[yellow]Atenção:[/yellow]")
+        for aviso in avisos:
+            console.print(f"  [yellow]•[/yellow] {aviso}")
+        _gap()
     if not ask_yes_no("Capítulos do lote estão corretos?", default=True):
-        return build_batch_chapters(suggested_order=suggested_order)
+        return build_batch_chapters(
+            suggested_order=suggested_order, existing=existing
+        )
     return chapters
 
 
@@ -1330,10 +1384,9 @@ def link_batch_folders(chapters) -> bool:
 
     for chapter in chapters:
         # Limpa temp anterior se re-vincular.
-        old_temp = getattr(chapter, "_temp_dir", None)
-        if old_temp is not None:
-            cleanup_temp(old_temp)
-            setattr(chapter, "_temp_dir", None)
+        if chapter.temp_dir is not None:
+            cleanup_temp(chapter.temp_dir)
+            chapter.temp_dir = None
 
         console.print(
             Panel(
@@ -1374,9 +1427,10 @@ def link_batch_folders(chapters) -> bool:
                     continue
                 enrich_durations(aulas)
                 chapter.pasta = pasta
+                chapter.fonte = str(fonte)
                 chapter.aulas = aulas
                 chapter.skip_videos = False
-                setattr(chapter, "_temp_dir", temp_dir)
+                chapter.temp_dir = temp_dir
                 console.print(
                     f"[green]✓[/green] {len(aulas)} vídeo(s) em [bold]{pasta.name}[/bold]"
                 )
