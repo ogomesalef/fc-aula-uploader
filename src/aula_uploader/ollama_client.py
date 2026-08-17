@@ -8,12 +8,15 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-# Preferência aproximada para tarefas curtas de normalização de texto.
+# Preferência para tarefas curtas de normalização de texto. Qwen 2.5 7B é
+# pequeno, multilíngue e segue JSON bem; modelos Whisper não servem para esta
+# tarefa e modelos VL são desnecessários porque enviamos somente texto.
 RECOMMENDED_MODELS = (
+    "qwen2.5:7b",
+    "qwen2.5",
     "llama3.2",
     "llama3.1",
     "llama3",
-    "qwen2.5",
     "mistral",
     "gemma2",
     "phi3",
@@ -82,19 +85,38 @@ def suggest_titles(
     Retorna lista de dicts com keys: arquivo, ordem, titulo.
     """
     prompt = (
-        "Normalize nomes de arquivos de aulas de vídeo para JSON.\n"
-        "Para cada arquivo, retorne ordem (número) e titulo (Title Case em português).\n"
+        "Normalize nomes de arquivos de aulas de vídeo.\n"
+        "Para cada arquivo, retorne ordem inteira e título em português.\n"
+        "Remova TODA numeração inicial do título, inclusive 9.1, 9.2 etc.\n"
         "Remova sufixos de pós-produção como ed/final/rev.\n"
-        "Responda SOMENTE com um JSON array no formato:\n"
-        '[{"arquivo":"...","ordem":1,"titulo":"..."}]\n\n'
+        "Preserve siglas como IA, API, AWS e K8s.\n"
+        "Responda somente no formato JSON solicitado.\n\n"
         "Arquivos:\n" + "\n".join(f"- {name}" for name in filenames)
     )
+    schema = {
+        "type": "object",
+        "properties": {
+            "aulas": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "arquivo": {"type": "string"},
+                        "ordem": {"type": "integer"},
+                        "titulo": {"type": "string"},
+                    },
+                    "required": ["arquivo", "ordem", "titulo"],
+                },
+            }
+        },
+        "required": ["aulas"],
+    }
     body = json.dumps(
         {
             "model": model,
             "prompt": prompt,
             "stream": False,
-            "format": "json",
+            "format": schema,
             "options": {"temperature": 0.1},
         }
     ).encode("utf-8")
@@ -108,10 +130,9 @@ def suggest_titles(
         payload = json.loads(resp.read().decode("utf-8"))
     text = payload.get("response", "")
     data = json.loads(text) if isinstance(text, str) else text
-    if isinstance(data, dict) and "items" in data:
-        data = data["items"]
+    data = _extract_suggestions(data)
     if not isinstance(data, list):
-        raise RuntimeError("Resposta do Ollama não é uma lista JSON")
+        raise RuntimeError("O modelo não retornou a lista de aulas esperada")
     results: list[dict[str, str | int]] = []
     for item in data:
         if not isinstance(item, dict):
@@ -124,3 +145,24 @@ def suggest_titles(
             }
         )
     return results
+
+
+def _extract_suggestions(data: object) -> object:
+    """Aceita formatos comuns gerados por modelos em JSON mode."""
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return data
+
+    for key in ("aulas", "items", "arquivos", "resultados", "results"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+
+    # Alguns modelos embrulham a resposta uma camada além.
+    for value in data.values():
+        if isinstance(value, dict):
+            nested = _extract_suggestions(value)
+            if isinstance(nested, list):
+                return nested
+    return data

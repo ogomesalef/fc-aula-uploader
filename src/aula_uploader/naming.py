@@ -86,6 +86,24 @@ def parse_nome_aula(filename: str) -> tuple[int | None, str]:
       ``01 - Introdução.mp4`` → (1, ``Introdução``)
     """
     stem = Path(filename).stem
+
+    # Numeração hierárquica no começo do arquivo:
+    #   9.1–O problema...  -> ordem 1, "O problema..."
+    #   9.3-Mapeando...    -> ordem 3, "Mapeando..."
+    # O portal usa uma ordem inteira dentro do capítulo; por isso usamos o
+    # último componente da numeração e removemos o prefixo inteiro do título.
+    hierarchical = re.match(
+        r"^\s*(?P<number>\d+(?:\.\d+)+)\s*(?:[-–—_:]\s*)?(?P<title>.+?)\s*$",
+        stem,
+    )
+    if hierarchical:
+        number = hierarchical.group("number")
+        title = hierarchical.group("title")
+        title_tokens = [t for t in re.split(r"[_\-\s–—]+", title) if t]
+        while title_tokens and title_tokens[-1].lower() in POST_SUFFIXES:
+            title_tokens.pop()
+        return int(number.rsplit(".", 1)[1]), _title_case(title_tokens)
+
     tokens = [t for t in re.split(r"[_\-\s]+", stem) if t]
 
     seq_idx = -1

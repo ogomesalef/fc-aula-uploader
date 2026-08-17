@@ -31,10 +31,63 @@ def parse_capitulo_id(valor: str) -> int:
     match = re.search(r"/conteudo/(\d+)/capitulo", valor)
     if match:
         return int(match.group(1))
+    # Dicas para URLs comuns do admin que NÃO são o capítulo de conteúdos.
+    if (
+        re.search(r"/admin/curso/capitulo/\d+/curso", valor)
+        or re.search(r"/admin/(titulo|curso)/\d+/(?:edit|curso)\b", valor)
+        or ("/capitulo/" in valor and "/edit/" in valor)
+    ):
+        raise ValueError(
+            "Esse link é do curso (lista de capítulos), não da lista de aulas.\n"
+            "Abra o capítulo no admin e use a URL que termina em "
+            ".../admin/curso/conteudo/<ID>/capitulo"
+        )
     raise ValueError(
-        "Não foi possível extrair o capítulo. "
+        "Não foi possível extrair o capítulo.\n"
         "Cole o ID numérico ou a URL .../admin/curso/conteudo/<ID>/capitulo"
     )
+
+
+def parse_curso_id(valor: str) -> int:
+    """Extrai o ID de um link de curso no admin."""
+    valor = valor.strip().strip("'\"")
+    if valor.isdigit():
+        return int(valor)
+
+    patterns = (
+        # Lista de capítulos do curso (formato oficial no admin)
+        r"/admin/curso/capitulo/(\d+)/curso",
+        r"/admin/(?:curso|titulo)/(\d+)/(?:edit|curso)\b",
+        r"/admin/curso/(\d+)/edit",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, valor)
+        if match:
+            return int(match.group(1))
+    raise ValueError(
+        "Não foi possível extrair o curso.\n"
+        "Cole o ID numérico ou a URL "
+        ".../admin/curso/capitulo/<ID>/curso"
+    )
+
+
+def parse_bunny_folder_id(valor: str) -> str:
+    """Extrai o ID de pasta de uma URL Bunny ou aceita o ID diretamente."""
+    valor = valor.strip().strip("'\"")
+    if not valor:
+        raise ValueError("Informe a URL ou o ID da pasta Bunny.")
+    if "://" not in valor:
+        return valor
+
+    match = re.search(r"/folders?/([^/?#]+)", valor, flags=re.IGNORECASE)
+    if not match:
+        match = re.search(r"[?&]folderId=([^&#]+)", valor, flags=re.IGNORECASE)
+    if not match:
+        raise ValueError(
+            "Não encontrei o ID da pasta nessa URL Bunny. "
+            "Cole a URL da pasta (com /folder/<ID>) ou só o ID dela."
+        )
+    return match.group(1)
 
 
 def montar_plano(

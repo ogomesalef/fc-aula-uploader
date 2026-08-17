@@ -4,7 +4,13 @@ from pathlib import Path
 import pytest
 
 from aula_uploader.media import mask_url, resolve_source, cleanup_temp
-from aula_uploader.plan import parse_capitulo_id, montar_plano, Acao
+from aula_uploader.plan import (
+    Acao,
+    montar_plano,
+    parse_bunny_folder_id,
+    parse_capitulo_id,
+    parse_curso_id,
+)
 from aula_uploader.naming import AulaArquivo
 from aula_uploader.portal_client import ConteudoLinha
 from aula_uploader.session import validate_base_url
@@ -22,6 +28,40 @@ def test_parse_capitulo_id_numeric():
 def test_parse_capitulo_id_invalid():
     with pytest.raises(ValueError):
         parse_capitulo_id("https://example.com/foo")
+
+
+def test_parse_capitulo_id_rejects_curso_url():
+    with pytest.raises(ValueError, match="lista de aulas"):
+        parse_capitulo_id(
+            "https://portal.fullcycle.com.br/admin/titulo/291/curso"
+        )
+
+
+def test_parse_curso_id_from_admin_url():
+    assert (
+        parse_curso_id(
+            "https://portal.fullcycle.com.br/admin/curso/capitulo/291/curso"
+        )
+        == 291
+    )
+    assert (
+        parse_curso_id("https://portal.fullcycle.com.br/admin/titulo/291/curso")
+        == 291
+    )
+
+
+def test_parse_bunny_folder_id_from_url():
+    assert (
+        parse_bunny_folder_id(
+            "https://dash.bunny.net/stream/library/123/folder/abc-123"
+        )
+        == "abc-123"
+    )
+
+
+def test_parse_bunny_folder_id_rejects_non_folder_url():
+    with pytest.raises(ValueError):
+        parse_bunny_folder_id("https://dash.bunny.net/stream/library/123")
 
 
 def test_validate_base_url_ok():
@@ -49,6 +89,30 @@ def test_mask_url_redacts_access_key_pattern():
     masked = mask_url(f"https://example.invalid/path/{token}/file")
     assert token not in masked
     assert "****" in masked
+
+
+def test_normalize_user_path_unescapes_space(tmp_path):
+    pasta = tmp_path / "Full Cycle"
+    pasta.mkdir()
+    alvo = pasta / "teste"
+    alvo.mkdir()
+    # Simula caminho arrastado no terminal: Full\ Cycle
+    raw = str(alvo).replace(" ", r"\ ")
+    assert r"\ " in raw
+    from aula_uploader.media import normalize_user_path
+
+    got = normalize_user_path(raw)
+    assert got == alvo
+    assert got.is_dir()
+
+
+def test_normalize_user_path_quotes(tmp_path):
+    from aula_uploader.media import normalize_user_path
+
+    pasta = tmp_path / "videos"
+    pasta.mkdir()
+    assert normalize_user_path(f"'{pasta}'") == pasta
+    assert normalize_user_path(f'"{pasta}"') == pasta
 
 
 def test_resolve_zip(tmp_path):

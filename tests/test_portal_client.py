@@ -13,9 +13,11 @@ LOGIN_HTML = """
 
 CAPITULO_HTML = """
 <html><body>
-  <h1>Capítulo Segurança</h1>
+  <h1>Conteúdo</h1>
   <nav class="breadcrumb">
-    <a href="/admin/curso/10/edit">Curso Demo</a>
+    <a href="/admin/curso/291/edit">Curso Demo</a>
+    <a href="/admin/curso/capitulo/291/curso">Capítulos</a>
+    <a href="/admin/curso/capitulo/55/edit/291/curso">Editar capítulo</a>
   </nav>
   <table><tbody>
     <tr>
@@ -30,6 +32,13 @@ CAPITULO_HTML = """
       <td><a href="/admin/curso/conteudo/100/edit">Editar</a></td>
     </tr>
   </tbody></table>
+</body></html>
+"""
+
+CAPITULO_EDIT_HTML = """
+<html><body>
+  <input name="son_cursosbundle_capitulo[nome]" value="Teste" />
+  <input name="son_cursosbundle_capitulo[_token]" value="tok" />
 </body></html>
 """
 
@@ -48,6 +57,46 @@ EDIT_FORM_HTML = """
   <input name="son_cursosbundle_conteudotype[status]" value="0" />
   <input name="son_cursosbundle_conteudotype[urlS3Nivo]" value="" />
   <a href="/admin/curso/conteudo/55/capitulo">Voltar</a>
+</body></html>
+"""
+
+CURSO_HTML = """
+<html><body>
+  <input name="son_cursosbundle_cursotype[nome]" value="Arquitetura na Era da IA" />
+</body></html>
+"""
+
+CURSO_SEGURANCA_HTML = """
+<html><body>
+  <input name="son_cursosbundle_cursotype[nome]" value="Curso de Segurança" />
+</body></html>
+"""
+
+CAPITULOS_BEFORE_HTML = """
+<html><body><table><tbody>
+  <tr>
+    <td>10</td><td>Introdução</td><td>5</td>
+    <td><a href="/admin/curso/capitulo/10/edit/99/curso">Editar</a></td>
+  </tr>
+</tbody></table></body></html>
+"""
+
+CAPITULOS_AFTER_HTML = """
+<html><body><table><tbody>
+  <tr>
+    <td>10</td><td>Introdução</td><td>5</td>
+    <td><a href="/admin/curso/capitulo/10/edit/99/curso">Editar</a></td>
+  </tr>
+  <tr>
+    <td>11</td><td>Threat Modeling</td><td>6</td>
+    <td><a href="/admin/curso/capitulo/11/edit/99/curso">Editar</a></td>
+  </tr>
+</tbody></table></body></html>
+"""
+
+CAPITULO_NEW_FORM_HTML = """
+<html><body>
+  <input name="son_cursosbundle_capitulo[_token]" value="chapter-token" />
 </body></html>
 """
 
@@ -97,10 +146,54 @@ def test_inspect_capitulo(httpx_mock, portal):
         url="https://portal.fullcycle.com.br/admin/curso/conteudo/55/capitulo",
         text=CAPITULO_HTML,
     )
+    httpx_mock.add_response(
+        url="https://portal.fullcycle.com.br/admin/curso/capitulo/55/edit/291/curso",
+        text=CAPITULO_EDIT_HTML,
+    )
+    httpx_mock.add_response(
+        url="https://portal.fullcycle.com.br/admin/curso/291/edit",
+        text=CURSO_HTML,
+    )
     info = portal.inspect_capitulo(55)
     assert info.id == 55
-    assert "Segurança" in info.nome
-    assert info.curso_id == 10
+    assert info.nome == "Teste"
+    assert info.curso_id == 291
+    assert info.curso_nome == "Arquitetura na Era da IA"
+
+
+def test_inspect_curso_and_list_capitulos(httpx_mock, portal):
+    httpx_mock.add_response(
+        url="https://portal.fullcycle.com.br/admin/curso/99/edit",
+        text=CURSO_SEGURANCA_HTML,
+    )
+    httpx_mock.add_response(
+        url="https://portal.fullcycle.com.br/admin/curso/capitulo/99/curso",
+        text=CAPITULOS_BEFORE_HTML,
+    )
+    curso = portal.inspect_curso(99)
+    capitulos = portal.list_capitulos(99)
+    assert curso.nome == "Curso de Segurança"
+    assert [(chapter.id, chapter.ordem) for chapter in capitulos] == [(10, 5)]
+
+
+def test_create_capitulo_with_bunny_folder(httpx_mock, portal):
+    url = "https://portal.fullcycle.com.br/admin/curso/capitulo/99/curso"
+    httpx_mock.add_response(url=url, text=CAPITULOS_BEFORE_HTML)
+    httpx_mock.add_response(
+        url="https://portal.fullcycle.com.br/admin/curso/capitulo/new/99/curso",
+        text=CAPITULO_NEW_FORM_HTML,
+    )
+    httpx_mock.add_response(url=url, status_code=302)
+    httpx_mock.add_response(url=url, text=CAPITULOS_AFTER_HTML)
+
+    created = portal.create_capitulo(
+        99,
+        "Threat Modeling",
+        6,
+        bunny_folder_id="bunny-folder-123",
+    )
+    assert created.id == 11
+    assert created.ordem == 6
 
 
 def test_upload_video_chunked(httpx_mock, portal, tmp_path):

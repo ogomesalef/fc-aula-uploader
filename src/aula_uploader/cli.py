@@ -9,19 +9,23 @@ from pathlib import Path
 from rich.console import Console
 
 from aula_uploader import __version__
+from aula_uploader.catalog import CatalogStore
 from aula_uploader.media import (
     cleanup_temp,
     enrich_durations,
+    normalize_user_path,
     resolve_source,
 )
 from aula_uploader.naming import listar_videos
 from aula_uploader.ollama_client import detect_ollama
 from aula_uploader.plan import montar_plano, parse_capitulo_id
+from aula_uploader.portal_client import CapituloResumo
 from aula_uploader.runner import build_state, executar_plano
 from aula_uploader.session import (
     PORTAL_LABELS,
     clear_all_sessions,
     ensure_authenticated,
+    has_saved_session,
 )
 from aula_uploader.state import UploadState
 from aula_uploader import tui
@@ -125,40 +129,201 @@ def cmd_logout() -> int:
 
 
 def cmd_assistente(args: argparse.Namespace) -> int:
-    tui.banner()
-    tui.show_environment()
-
-    portal_key = tui.ask_portal()
-    capitulo_raw = tui.ask_capitulo_url()
-    try:
-        capitulo_id = parse_capitulo_id(capitulo_raw)
-    except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
-        return 1
-
-    fonte = tui.ask_source_path()
+    portal = None
     temp_dir = None
     try:
-        pasta, temp_dir = resolve_source(fonte)
-    except (FileNotFoundError, RuntimeError, OSError) as exc:
-        console.print(f"[red]{exc}[/red]")
-        return 1
+        tui.show_step(
+            1,
+            "Portal e login",
+            "Autentique primeiro. Assim falhamos cedo se a senha estiver errada.",
+        )
+        portal_key = tui.ask_portal()
+        portal = tui.ask_login(portal_key)
+        catalog = CatalogStore()
 
-    try:
-        aulas = listar_videos(pasta, recursivo=bool(args.recursivo))
-        if not aulas:
-            console.print(f"[red]Nenhum vídeo encontrado em {pasta}[/red]")
-            return 1
+        tui.show_step(
+            2,
+            "Escolher o capítulo",
+            "Crie um capítulo novo com uma pasta Bunny ou use um capítulo existente.",
+        )
+        target_mode = tui.ask_target_mode()
+
+        if target_mode == "create":
+            tui.show_step(
+                2,
+                "Criar capítulo",
+                "Primeiro confirme o curso. A pasta Bunny já deve existir.",
+            )
+            while True:
+                curso_id = tui.ask_curso_id()
+                try:
+                    curso = portal.inspect_curso(curso_id)
+                    capitulos = portal.list_capitulos(curso_id)
+                    # A consulta necessária para sugerir ordem já atualiza o catálogo.
+                    catalog.upsert_course(curso, capitulos)
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    console.print(f"[red]Não foi possível ler o curso: {exc}[/red]")
+
+            last_order = max((chapter.ordem for chapter in capitulos), default=0)
+            tui.show_curso(curso, last_order=last_order if capitulos else None)
+            if not tui.ask_yes_no("Este é o curso certo?", default=True):
+                console.print("[yellow]Ok, informe outro curso.[/yellow]")
+                while True:
+                    curso_id = tui.ask_curso_id()
+                    try:
+                        curso = portal.inspect_curso(curso_id)
+                        capitulos = portal.list_capitulos(curso_id)
+                        catalog.upsert_course(curso, capitulos)
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        console.print(f"[red]Não foi possível ler o curso: {exc}[/red]")
+                last_order = max((chapter.ordem for chapter in capitulos), default=0)
+
+            chapter_name, bunny_folder_id, chapter_order = tui.ask_new_chapter_details(
+                last_order + 1
+            )
+            console.print(
+                f"\nCapítulo: [bold]{chapter_name}[/bold]\n"
+                f"Ordem: [bold]{chapter_order}[/bold]\n"
+                f"Pasta Bunny (ID): [bold]{bunny_folder_id}[/bold]"
+            )
+            if not tui.ask_yes_no(
+                "Criar este capítulo agora? Depois ele receberá as aulas.",
+                default=True,
+            ):
+                console.print("[yellow]Operação cancelada. Nada foi criado.[/yellow]")
+                return 0
+            created = portal.create_capitulo(
+                curso_id,
+                chapter_name,
+                chapter_order,
+                bunny_folder_id=bunny_folder_id,
+            )
+            capitulo_id = created.id
+            capitulo = CapituloResumo(
+                id=created.id,
+                nome=created.nome,
+                curso_id=curso.id,
+                curso_nome=curso.nome,
+            )
+            existentes = []
+            console.print(
+                f"[green]✓ Capítulo criado: {created.nome} (ID {created.id})[/green]"
+            )
+            catalog.sync_course_in_background(portal, curso_id)
+        elif target_mode == "mapped":
+            tui.show_step(
+                2,
+                "Capítulo já mapeado",
+                "Ao escolher o curso, a lista de capítulos é atualizada no portal.",
+            )
+            selected = tui.ask_mapped_chapter(catalog, portal)
+            if selected is None:
+                console.print(
+                    "[yellow]Use a opção de informar curso/capítulo para iniciar o mapeamento.[/yellow]"
+                )
+                return 0
+            course_id, capitulo_id = selected
+            try:
+                capitulo = portal.inspect_capitulo(capitulo_id)
+                existentes = portal.listar_conteudos_tabela(capitulo_id)
+                catalog.upsert_chapter(capitulo)
+            except Exception as exc:  # noqa: BLE001
+                console.print(f"[red]Não foi possível abrir o capítulo mapeado: {exc}[/red]")
+                console.print(
+                    "[dim]Ele pode ter sido removido ou seu acesso pode ter mudado.[/dim]"
+                )
+                return 1
+        else:
+            tui.show_step(
+                2,
+                "Capítulo de destino",
+                "Cole o link da lista de aulas do capítulo já criado no portal.",
+            )
+            while True:
+                capitulo_id = tui.ask_capitulo_id()
+                try:
+                    capitulo = portal.inspect_capitulo(capitulo_id)
+                    existentes = portal.listar_conteudos_tabela(capitulo_id)
+                    catalog.upsert_chapter(capitulo)
+                    if capitulo.curso_id is not None:
+                        catalog.sync_course_in_background(portal, capitulo.curso_id)
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    console.print(
+                        f"[red]Não foi possível ler o capítulo {capitulo_id}: {exc}[/red]"
+                    )
+                    console.print(
+                        "[dim]Confira se o link é .../admin/curso/conteudo/<ID>/capitulo[/dim]"
+                    )
+
+            tui.show_destino(
+                portal_key=portal_key,
+                capitulo=capitulo,
+                pasta=Path("—"),
+                total=0,
+            )
+            if not tui.ask_yes_no("Este é o capítulo certo?", default=True):
+                # Volta ao começo deste caminho sem refazer login.
+                while True:
+                    capitulo_id = tui.ask_capitulo_id()
+                    try:
+                        capitulo = portal.inspect_capitulo(capitulo_id)
+                        existentes = portal.listar_conteudos_tabela(capitulo_id)
+                        catalog.upsert_chapter(capitulo)
+                        if capitulo.curso_id is not None:
+                            catalog.sync_course_in_background(portal, capitulo.curso_id)
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        console.print(f"[red]Ainda não deu: {exc}[/red]")
+
+        tui.show_step(
+            3,
+            "Selecionar os vídeos",
+            "Informe uma pasta ou um arquivo ZIP. O original não será alterado.",
+        )
+        while True:
+            fonte = tui.ask_source_path()
+            try:
+                pasta, temp_dir = resolve_source(fonte)
+                aulas = listar_videos(pasta, recursivo=bool(args.recursivo))
+                if not aulas:
+                    cleanup_temp(temp_dir)
+                    temp_dir = None
+                    console.print(f"[red]Nenhum vídeo encontrado em {pasta}[/red]")
+                    console.print("[dim]Escolha outra pasta/.zip.[/dim]")
+                    continue
+                break
+            except (FileNotFoundError, RuntimeError, OSError, NotADirectoryError) as exc:
+                cleanup_temp(temp_dir)
+                temp_dir = None
+                console.print(f"[red]{exc}[/red]")
+                console.print("[dim]Tente de novo.[/dim]")
+
         enrich_durations(aulas)
         aulas = tui.review_aulas(aulas)
         aulas.sort(key=lambda a: (a.ordem, a.path.name))
 
-        console.print("Autenticando no portal...")
-        portal = ensure_authenticated(portal_key, log=lambda m: console.print(f"  {m}"))
-        capitulo = portal.inspect_capitulo(capitulo_id)
-        existentes = portal.listar_conteudos_tabela(capitulo_id)
+        # Destino já foi confirmado na etapa 2; aqui só consulta o que já existe.
+        console.print("\n[dim]Consultando o capítulo no portal…[/dim]")
+        try:
+            portal.ensure_authenticated(log=lambda m: console.print(f"  {m}"))
+            existentes = portal.listar_conteudos_tabela(capitulo_id)
+            capitulo = portal.inspect_capitulo(capitulo_id)
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]Sessão inválida ou capítulo inacessível: {exc}[/red]")
+            portal = tui.ask_login(portal_key)
+            existentes = portal.listar_conteudos_tabela(capitulo_id)
+            capitulo = portal.inspect_capitulo(capitulo_id)
+
         plano = montar_plano(aulas, existentes, force=bool(args.force))
 
+        tui.show_step(
+            5,
+            "Revisar plano",
+            "Confira títulos, ações (criar / enviar / pular) e como publicar.",
+        )
         tui.show_destino(
             portal_key=portal_key,
             capitulo=capitulo,
@@ -166,16 +331,12 @@ def cmd_assistente(args: argparse.Namespace) -> int:
             total=len(aulas),
         )
         tui.show_plan_table(plano)
-
-        publicar = bool(args.publicar) or tui.ask_yes_no(
-            "Publicar as aulas novas? (Não = criar como Rascunho)",
-            default=False,
-        )
+        status = tui.ask_publish_status(force_publicar=bool(args.publicar))
+        publicar = status == "1"
         if not tui.confirm_upload(plano, publicar=publicar):
-            console.print("Cancelado. Nada foi enviado.")
+            console.print("[yellow]Cancelado. Nada foi enviado.[/yellow]")
             return 0
 
-        status = "1" if publicar else "0"
         state = build_state(
             portal=portal_key,
             capitulo_id=capitulo_id,
@@ -184,26 +345,25 @@ def cmd_assistente(args: argparse.Namespace) -> int:
             status_criacao=status,
             force=bool(args.force),
         )
-        ok, pulados, falhas = executar_plano(
+        ok, pulados, falhas = tui.run_upload_screen(
             portal,
             capitulo_id=capitulo_id,
             plano=plano,
             state=state,
             status_criacao=status,
-            log=lambda m: console.print(m),
+            portal_key=portal_key,
+            capitulo=capitulo,
         )
-        console.print(
-            f"\nConcluído: {ok} ok · {pulados} pulados · {len(falhas)} falhas"
-        )
-        console.print(f"Estado salvo em: {state.path}")
         if falhas:
-            for titulo, msg in falhas:
-                console.print(f"  [red]✗ {titulo}: {msg}[/red]")
-            console.print("Retome com: aula-uploader resume --portal ... --capitulo ...")
             return 1
         return 0
     finally:
         cleanup_temp(temp_dir)
+        if portal is not None:
+            try:
+                portal.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -219,20 +379,25 @@ def _run_noninteractive(
 ) -> int:
     temp_dir = None
     try:
-        pasta, temp_dir = resolve_source(Path(args.fonte))
+        pasta, temp_dir = resolve_source(normalize_user_path(str(args.fonte)))
         aulas = listar_videos(pasta, recursivo=bool(args.recursivo))
         if not aulas:
             console.print("[red]Nenhum vídeo encontrado.[/red]")
             return 1
         enrich_durations(aulas)
-        portal = ensure_authenticated(args.portal, log=lambda m: console.print(m))
+        portal = ensure_authenticated(
+            args.portal,
+            log=lambda m: console.print(m),
+            persist_session=False,
+            use_saved_session=has_saved_session(args.portal),
+        )
         capitulo = portal.inspect_capitulo(args.capitulo)
         existentes = portal.listar_conteudos_tabela(args.capitulo)
         plano = montar_plano(aulas, existentes, force=bool(args.force))
         tui.show_destino(
             portal_key=args.portal,
             capitulo=capitulo,
-            pasta=Path(args.fonte),
+            pasta=normalize_user_path(str(args.fonte)),
             total=len(aulas),
         )
         tui.show_plan_table(plano)
@@ -288,7 +453,12 @@ def cmd_resume(args: argparse.Namespace) -> int:
         console.print(f"[red]Pasta do estado não existe mais: {pasta}[/red]")
         return 1
 
-    portal = ensure_authenticated(args.portal, log=lambda m: console.print(m))
+    portal = ensure_authenticated(
+        args.portal,
+        log=lambda m: console.print(m),
+        persist_session=False,
+        use_saved_session=has_saved_session(args.portal),
+    )
     existentes = {
         l.titulo.strip().lower(): l
         for l in portal.listar_conteudos_tabela(args.capitulo)

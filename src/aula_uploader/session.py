@@ -109,6 +109,7 @@ def prompt_credentials_if_needed(
     *,
     username: str = "",
     password: str = "",
+    allow_empty_password: bool = False,
 ) -> tuple[str, str, str]:
     base, env_user, env_pass = get_credentials(portal_key)
     user = username or env_user
@@ -118,11 +119,18 @@ def prompt_credentials_if_needed(
             f"Usuário do portal {PORTAL_LABELS[portal_key]} "
             "(mesmo do login administrativo): "
         ).strip()
-    if not pwd:
+    if not pwd and not allow_empty_password:
         pwd = getpass.getpass("Senha (não será exibida): ")
-    if not user or not pwd:
-        raise RuntimeError("Usuário e senha são obrigatórios.")
+    if not user:
+        raise RuntimeError("Usuário é obrigatório.")
+    if not pwd and not allow_empty_password:
+        raise RuntimeError("Senha é obrigatória.")
     return base, user, pwd
+
+
+def has_saved_session(portal_key: str) -> bool:
+    path = session_path(portal_key)
+    return path.exists() and path.stat().st_size > 0
 
 
 def build_client(
@@ -130,27 +138,63 @@ def build_client(
     *,
     username: str = "",
     password: str = "",
-    persist_session: bool = True,
+    persist_session: bool = False,
+    use_saved_session: bool = False,
 ) -> PortalClient:
+    """Monta o client.
+
+    Por padrão não grava cookies em disco (mais seguro).
+    ``use_saved_session`` só lê um arquivo já existente; para gravar de novo
+    use ``persist_session=True``.
+    """
     base, user, pwd = prompt_credentials_if_needed(
-        portal_key, username=username, password=password
+        portal_key,
+        username=username,
+        password=password,
+        allow_empty_password=use_saved_session and has_saved_session(portal_key),
     )
-    path = session_path(portal_key) if persist_session else None
-    if path:
+    path = None
+    if persist_session or use_saved_session:
+        path = session_path(portal_key)
         ensure_secure_file(path)
-    return PortalClient(base, user, pwd, session_path=path)
+    if persist_session:
+        return PortalClient(base, user, pwd, session_path=path)
+    if use_saved_session and path and path.exists():
+        # Lê cookies salvos, mas não sobrescreve o arquivo ao fechar.
+        client = PortalClient(base, user, pwd, session_path=path)
+        client.session_path = None
+        return client
+    return PortalClient(base, user, pwd, session_path=None)
 
 
 def ensure_authenticated(
     portal_key: str,
     *,
+    username: str = "",
+    password: str = "",
     log: Callable[[str], None] | None = None,
     force: bool = False,
-    persist_session: bool = True,
+    persist_session: bool = False,
+    use_saved_session: bool = False,
 ) -> PortalClient:
-    portal = build_client(portal_key, persist_session=persist_session)
+    portal = build_client(
+        portal_key,
+        username=username,
+        password=password,
+        persist_session=persist_session,
+        use_saved_session=use_saved_session,
+    )
     portal.ensure_authenticated(log=log, force=force)
     return portal
+
+
+def enable_session_persistence(portal: PortalClient, portal_key: str) -> Path:
+    """Passa a gravar cookies em disco (permissão 0600)."""
+    path = session_path(portal_key)
+    portal.session_path = path
+    portal.save_session()
+    ensure_secure_file(path)
+    return path
 
 
 def clear_session(portal_key: str) -> bool:

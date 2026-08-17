@@ -2,21 +2,78 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import questionary
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from aula_uploader.catalog import CatalogStore
 from aula_uploader.media import format_bytes, format_duration
 from aula_uploader.naming import AulaArquivo
 from aula_uploader.ollama_client import detect_ollama, suggest_titles
-from aula_uploader.plan import Acao, PlanoItem
-from aula_uploader.portal_client import CapituloResumo
+from aula_uploader.plan import Acao, PlanoItem, parse_bunny_folder_id, parse_curso_id
+from aula_uploader.portal_client import CapituloResumo, CursoInfo
 from aula_uploader.session import PORTAL_LABELS
 
 console = Console()
+TOTAL_STEPS = 6
+
+_ACAO_STYLE = {
+    Acao.CRIAR: "bold green",
+    Acao.ENVIAR: "bold cyan",
+    Acao.PULAR: "bold magenta",
+    Acao.FORCAR: "bold yellow",
+}
+_ACAO_HINT = {
+    Acao.CRIAR: "aula nova no capítulo",
+    Acao.ENVIAR: "aula existe, ainda sem vídeo",
+    Acao.PULAR: "conteúdo já existe com vídeo",
+    Acao.FORCAR: "reenviar mesmo com vídeo",
+}
+
+
+def _gap() -> None:
+    """Espaço vertical entre blocos da TUI."""
+    console.print()
+
+
+def _make_table(title: str = "", *, show_header: bool = True) -> Table:
+    return Table(
+        title=title or None,
+        show_header=show_header,
+        box=box.ROUNDED,
+        padding=(0, 1),
+        pad_edge=True,
+        expand=False,
+    )
+
+
+def format_acao(acao: Acao) -> str:
+    style = _ACAO_STYLE.get(acao, "white")
+    return f"[{style}]{acao.value}[/{style}]"
+
+
+def show_acao_legend(plano: list[PlanoItem] | None = None) -> None:
+    """Legenda só com as ações presentes no plano (ou todas, se vazio)."""
+    presentes = {item.acao for item in plano} if plano else set(_ACAO_HINT)
+    if not presentes:
+        return
+    lines = []
+    for acao in (Acao.CRIAR, Acao.ENVIAR, Acao.PULAR, Acao.FORCAR):
+        if acao in presentes:
+            lines.append(f"  {format_acao(acao)}  —  {_ACAO_HINT[acao]}")
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title="Legenda",
+            border_style="dim",
+            padding=(0, 1),
+        )
+    )
 
 
 def banner() -> None:
@@ -28,6 +85,28 @@ def banner() -> None:
             border_style="cyan",
         )
     )
+
+
+def show_step(number: int, title: str, description: str = "") -> None:
+    """Limpa a tela e mostra uma única etapa por vez."""
+    console.clear()
+    progress = "  ".join(
+        "[cyan]●[/cyan]" if idx <= number else "[dim]○[/dim]"
+        for idx in range(1, TOTAL_STEPS + 1)
+    )
+    body = f"[bold]{title}[/bold]"
+    if description:
+        body += f"\n[dim]{description}[/dim]"
+    console.print(
+        Panel(
+            body,
+            title=f"aula-uploader · Etapa {number}/{TOTAL_STEPS}",
+            subtitle=progress,
+            border_style="cyan",
+            padding=(1, 2),
+        )
+    )
+    _gap()
 
 
 def ask_portal() -> str:
@@ -43,30 +122,349 @@ def ask_portal() -> str:
     return escolha
 
 
-def ask_capitulo_url() -> str:
-    valor = questionary.text(
-        "Cole o link do capítulo (ou o ID):\n"
-        "  ex.: https://portal.fullcycle.com.br/admin/curso/conteudo/299/capitulo"
+def ask_login(portal_key: str):
+    """Login no início do fluxo, pedindo credenciais de forma explícita."""
+    from aula_uploader.session import (
+        PORTAL_LABELS,
+        clear_session,
+        enable_session_persistence,
+        ensure_authenticated,
+        has_saved_session,
+    )
+
+    label = PORTAL_LABELS.get(portal_key, portal_key)
+    console.print(
+        f"\n[dim]Use o mesmo usuário e senha do login administrativo em {label}.[/dim]"
+    )
+    console.print(
+        "[dim]Mais seguro: digitar agora e não salvar sessão.[/dim]"
+    )
+
+    use_saved = False
+    if has_saved_session(portal_key):
+        escolha = questionary.select(
+            "Há uma sessão salva neste computador. O que deseja fazer?",
+            choices=[
+                questionary.Choice(
+                    "Reutilizar sessão salva (mais conveniente)",
+                    value="reuse",
+                ),
+                questionary.Choice(
+                    "Fazer login de novo sem salvar (mais seguro)",
+                    value="fresh",
+                ),
+                questionary.Choice(
+                    "Apagar sessão salva e fazer login de novo",
+                    value="clear",
+                ),
+            ],
+        ).ask()
+        if not escolha:
+            raise SystemExit(1)
+        if escolha == "clear":
+            clear_session(portal_key)
+            console.print("[green]Sessão anterior removida.[/green]")
+        elif escolha == "reuse":
+            use_saved = True
+
+    username = ""
+    password = ""
+
+    while True:
+        if not use_saved:
+            username, password = _ask_credentials(portal_key)
+        try:
+            portal = ensure_authenticated(
+                portal_key,
+                username=username,
+                password=password,
+                log=lambda m: console.print(f"  {m}"),
+                force=not use_saved,
+                persist_session=False,
+                use_saved_session=use_saved,
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]Login falhou: {exc}[/red]")
+            if use_saved:
+                console.print(
+                    "[dim]A sessão salva pode ter expirado. Vamos pedir usuário e senha.[/dim]"
+                )
+                use_saved = False
+                clear_session(portal_key)
+                continue
+            console.print("[dim]Digite de novo o usuário e a senha do portal.[/dim]")
+            if not ask_yes_no("Tentar login novamente?", default=True):
+                raise SystemExit(1)
+
+    if use_saved:
+        console.print("[green]✓ Autenticado com sessão salva.[/green]")
+        return portal
+
+    salvar = ask_yes_no(
+        "Salvar sessão neste computador para as próximas execuções?\n"
+        "  (Não = mais seguro · Sim = não pedir senha de novo)",
+        default=True,
+    )
+    if salvar:
+        path = enable_session_persistence(portal, portal_key)
+        console.print(f"[green]✓ Sessão salva em {path}[/green]")
+        console.print("[dim]Remova depois com: aula-uploader logout[/dim]")
+    else:
+        console.print("[green]✓ Login OK — sessão só nesta execução.[/green]")
+    return portal
+
+
+def _ask_credentials(portal_key: str) -> tuple[str, str]:
+    """Pede usuário/senha no terminal. .env só vira sugestão, nunca login silencioso."""
+    import getpass
+
+    from aula_uploader.session import PORTAL_LABELS, get_credentials
+
+    _base, env_user, env_pass = get_credentials(portal_key)
+    label = PORTAL_LABELS.get(portal_key, portal_key)
+
+    if env_user and env_pass:
+        escolha = questionary.select(
+            "Como deseja autenticar?",
+            choices=[
+                questionary.Choice(
+                    "Digitar usuário e senha agora (recomendado)",
+                    value="prompt",
+                ),
+                questionary.Choice(
+                    f"Usar o .env local ({env_user})",
+                    value="env",
+                ),
+            ],
+        ).ask()
+        if not escolha:
+            raise SystemExit(1)
+        if escolha == "env":
+            console.print(f"[dim]Usando credenciais do .env para {label}.[/dim]")
+            return env_user, env_pass
+
+    default_user = env_user or ""
+    user = questionary.text(
+        f"Usuário do portal {label}:",
+        default=default_user,
+        validate=lambda text: bool(text.strip()),
     ).ask()
-    if not valor:
+    if user is None:
         raise SystemExit(1)
-    return valor.strip().strip("'\"")
+    password = getpass.getpass("Senha (não será exibida): ")
+    if not password:
+        raise RuntimeError("Senha é obrigatória.")
+    return user.strip(), password
+
+
+def ask_target_mode() -> str:
+    """Primeira opção é criar capítulo com pasta Bunny já preparada."""
+    escolha = questionary.select(
+        "Como deseja enviar as aulas?",
+        choices=[
+            questionary.Choice(
+                "Criar um novo capítulo e depois subir as aulas",
+                value="create",
+            ),
+            questionary.Choice(
+                "Usar um capítulo que já existe",
+                value="existing",
+            ),
+            questionary.Choice(
+                "Usar um capítulo já mapeado neste computador",
+                value="mapped",
+            ),
+        ],
+    ).ask()
+    if not escolha:
+        raise SystemExit(1)
+    return escolha
+
+
+def ask_mapped_chapter(
+    catalog: CatalogStore,
+    portal,
+) -> tuple[int, int] | None:
+    """Navega por curso → capítulo; ao escolher o curso, sincroniza com o portal."""
+    courses = catalog.courses()
+    if not courses:
+        console.print(
+            "[yellow]Ainda não há cursos mapeados neste computador.[/yellow]\n"
+            "[dim]Informe um curso ou capítulo uma vez; ele será mapeado em segundo plano.[/dim]"
+        )
+        return None
+
+    course_id = questionary.select(
+        "Curso já mapeado:",
+        choices=[
+            questionary.Choice(
+                f"{course.nome} (ID {course.id}) · {len(course.chapters)} capítulo(s)",
+                value=course.id,
+            )
+            for course in courses
+        ],
+    ).ask()
+    if course_id is None:
+        raise SystemExit(1)
+
+    course_id = int(course_id)
+    cached = catalog.get_course(course_id)
+    console.print(
+        f"\n[cyan]Atualizando[/cyan] capítulos de "
+        f"[bold]{cached.nome if cached else course_id}[/bold] no portal…"
+    )
+    try:
+        course = catalog.sync_course(portal, course_id)
+        console.print(
+            f"[green]✓[/green] Catálogo atualizado · "
+            f"{len(course.chapters)} capítulo(s)"
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(
+            f"[yellow]Não foi possível atualizar agora:[/yellow] {exc}\n"
+            "[dim]Usando a lista salva neste computador (pode estar desatualizada).[/dim]"
+        )
+        course = catalog.get_course(course_id)
+
+    if course is None or not course.chapters:
+        console.print("[yellow]Este curso ainda não possui capítulos no catálogo.[/yellow]")
+        return None
+
+    chapter_id = questionary.select(
+        f"Capítulo de {course.nome}:",
+        choices=[
+            questionary.Choice(
+                f"{chapter.ordem if chapter.ordem else '—'} · {chapter.nome} (ID {chapter.id})",
+                value=chapter.id,
+            )
+            for chapter in course.chapters
+        ],
+    ).ask()
+    if chapter_id is None:
+        raise SystemExit(1)
+    return course_id, int(chapter_id)
+
+
+def ask_curso_id() -> int:
+    console.print(
+        "[dim]Cole o link do curso no admin ou somente o ID dele.[/dim]"
+    )
+    while True:
+        valor = questionary.text(
+            "Link/ID do curso:\n"
+            "  ex.: https://portal.fullcycle.com.br/admin/curso/capitulo/291/curso"
+        ).ask()
+        if valor is None:
+            raise SystemExit(1)
+        try:
+            return parse_curso_id(valor)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+
+
+def show_curso(curso: CursoInfo, *, last_order: int | None = None) -> None:
+    table = _make_table("Curso confirmado", show_header=False)
+    table.add_column("Campo", style="bold", no_wrap=True)
+    table.add_column("Valor")
+    table.add_row("Curso", curso.nome)
+    table.add_row("ID", str(curso.id))
+    if last_order is None:
+        table.add_row("Capítulos existentes", "Nenhum")
+        table.add_row("Ordem sugerida", "1")
+    else:
+        table.add_row("Última ordem existente", str(last_order))
+        table.add_row("Ordem sugerida para o novo capítulo", str(last_order + 1))
+    console.print(table)
+    _gap()
+
+
+def ask_new_chapter_details(suggested_order: int) -> tuple[str, str, int]:
+    """Retorna nome, ID Bunny extraído da URL e ordem do capítulo."""
+    while True:
+        nome = questionary.text(
+            "Nome do novo capítulo:",
+            validate=lambda text: bool(text.strip()),
+        ).ask()
+        if nome is None:
+            raise SystemExit(1)
+        bunny_url = questionary.text(
+            "URL ou ID da pasta Bunny:",
+            instruction="A pasta deve já existir no Bunny.",
+        ).ask()
+        if bunny_url is None:
+            raise SystemExit(1)
+        try:
+            bunny_id = parse_bunny_folder_id(bunny_url)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            continue
+        order = questionary.text(
+            "Ordem do capítulo:",
+            default=str(suggested_order),
+            validate=lambda text: text.isdigit() and int(text) > 0,
+        ).ask()
+        if order is None:
+            raise SystemExit(1)
+        return nome.strip(), bunny_id, int(order)
+
+
+def ask_capitulo_id() -> int:
+    """Pede o capítulo em loop até receber um ID/URL válidos."""
+    from aula_uploader.plan import parse_capitulo_id
+
+    console.print(
+        "[dim]Use a URL da lista de aulas do capítulo "
+        "(.../admin/curso/conteudo/<ID>/capitulo), não a URL do curso.[/dim]"
+    )
+    while True:
+        valor = questionary.text(
+            "Cole o link do capítulo (ou o ID):\n"
+            "  ex.: https://portal.fullcycle.com.br/admin/curso/conteudo/299/capitulo"
+        ).ask()
+        if valor is None:
+            raise SystemExit(1)
+        valor = valor.strip().strip("'\"")
+        if not valor:
+            console.print("[yellow]Informe o link ou o ID do capítulo.[/yellow]")
+            continue
+        try:
+            capitulo_id = parse_capitulo_id(valor)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            console.print("[dim]Tente de novo.[/dim]")
+            continue
+        console.print(f"  → Capítulo {capitulo_id}")
+        return capitulo_id
 
 
 def ask_source_path() -> Path:
+    """Pede pasta/.zip em loop até existir um caminho válido."""
+    from aula_uploader.media import is_zip, normalize_user_path
+
     console.print(
         "[dim]Dica: no terminal do macOS/Linux você pode arrastar a pasta "
         "ou o .zip para esta janela.[/dim]"
     )
-    valor = questionary.path(
-        "Pasta com os vídeos ou arquivo .zip:"
-    ).ask()
-    if not valor:
-        raise SystemExit(1)
-    return Path(valor.strip().strip("'\"")).expanduser()
+    while True:
+        valor = questionary.path(
+            "Pasta com os vídeos ou arquivo .zip:"
+        ).ask()
+        if valor is None:
+            raise SystemExit(1)
+        path = normalize_user_path(valor)
+        if path.is_dir() or is_zip(path):
+            console.print(f"  → {path}")
+            return path
+        console.print(f"[red]Pasta ou .zip não encontrado: {path}[/red]")
+        console.print(
+            "[dim]Caminhos com espaço ficam assim: "
+            "/Users/.../Full Cycle/teste (sem barra antes do espaço).[/dim]"
+        )
+        console.print("[dim]Tente de novo.[/dim]")
 
 
-def ask_yes_no(prompt: str, *, default: bool = False) -> bool:
+def ask_yes_no(prompt: str, *, default: bool = True) -> bool:
     return bool(
         questionary.confirm(prompt, default=default).ask()
     )
@@ -75,8 +473,8 @@ def ask_yes_no(prompt: str, *, default: bool = False) -> bool:
 def show_environment(*, ollama_info=None) -> None:
     from aula_uploader.media import ffprobe_available
 
-    table = Table(title="Ambiente", show_header=False)
-    table.add_column("Item")
+    table = _make_table("Ambiente", show_header=False)
+    table.add_column("Item", style="bold", no_wrap=True)
     table.add_column("Status")
     table.add_row("ffprobe (duração)", "ok" if ffprobe_available() else "ausente (opcional)")
     if ollama_info is None:
@@ -91,6 +489,7 @@ def show_environment(*, ollama_info=None) -> None:
     else:
         table.add_row("Ollama", "não instalado (opcional)")
     console.print(table)
+    _gap()
 
 
 def show_destino(
@@ -100,63 +499,85 @@ def show_destino(
     pasta: Path,
     total: int,
 ) -> None:
-    table = Table(title="Destino no portal", show_header=False)
-    table.add_column("Campo")
+    table = _make_table("Destino no portal", show_header=False)
+    table.add_column("Campo", style="bold", no_wrap=True)
     table.add_column("Valor")
     table.add_row("Portal", PORTAL_LABELS.get(portal_key, portal_key))
-    if capitulo.curso_nome or capitulo.curso_id:
-        curso = capitulo.curso_nome or ""
-        if capitulo.curso_id:
-            curso = f"{curso} (ID {capitulo.curso_id})".strip()
-        table.add_row("Curso", curso or "—")
+
+    if capitulo.curso_nome and capitulo.curso_id:
+        curso_txt = f"{capitulo.curso_nome} (ID {capitulo.curso_id})"
+    elif capitulo.curso_nome:
+        curso_txt = capitulo.curso_nome
+    elif capitulo.curso_id:
+        curso_txt = f"ID {capitulo.curso_id}"
+    else:
+        curso_txt = "—"
+    table.add_row("Curso", curso_txt)
     table.add_row("Capítulo", f"{capitulo.nome} (ID {capitulo.id})")
-    table.add_row("Pasta/ZIP", str(pasta))
-    table.add_row("Aulas", str(total))
+    if str(pasta) not in {"", "—"}:
+        table.add_row("Pasta/ZIP", str(pasta))
+    if total:
+        table.add_row("Aulas", str(total))
     console.print(table)
+    _gap()
 
 
 def show_plan_table(plano: list[PlanoItem]) -> None:
-    table = Table(title="Plano de upload")
-    table.add_column("#", justify="right")
-    table.add_column("Ordem", justify="right")
-    table.add_column("Título")
-    table.add_column("Arquivo")
-    table.add_column("Tamanho", justify="right")
-    table.add_column("Duração", justify="right")
-    table.add_column("Ação")
+    table = _make_table("Plano de upload")
+    table.add_column("Ordem", justify="right", no_wrap=True)
+    table.add_column("Título", overflow="fold")
+    table.add_column("Arquivo", overflow="ellipsis", max_width=42)
+    table.add_column("Tamanho", justify="right", no_wrap=True)
+    table.add_column("Duração", justify="right", no_wrap=True)
+    table.add_column("Ação", justify="center", no_wrap=True)
     for item in plano:
         aula = item.aula
         marca = "*" if aula.ordem_inferida else ""
         table.add_row(
-            str(aula.ordem),
             f"{aula.ordem}{marca}",
             aula.titulo,
             aula.path.name,
             format_bytes(aula.tamanho_bytes),
             format_duration(aula.duracao_segundos),
-            item.acao.value,
+            format_acao(item.acao),
         )
     console.print(table)
-    console.print("[dim]* ordem inferida (sem número claro no nome)[/dim]")
+    _gap()
+    show_acao_legend(plano)
+    if any(item.aula.ordem_inferida for item in plano):
+        console.print("[dim]* ordem inferida (sem número claro no nome)[/dim]")
+    _gap()
 
 
 def review_aulas(aulas: list[AulaArquivo]) -> list[AulaArquivo]:
-    """Revisa nomes um a um, com opção de confiar no Ollama."""
+    """Escolhe normalização e sempre deixa revisar/editar os nomes."""
     ollama = detect_ollama()
+    show_step(
+        4,
+        "Revisar nomes das aulas",
+        "Escolha como preparar os títulos e confirme se ficou certo.",
+    )
     show_environment(ollama_info=ollama)
 
     modo = questionary.select(
-        "Como deseja revisar os nomes das aulas?",
+        "Como deseja preparar os títulos?",
         choices=[
-            questionary.Choice("Revisar uma a uma (recomendado)", value="manual"),
             questionary.Choice(
-                "Confiar na normalização automática e só confirmar o lote",
+                "Normalização local — rápida, sem IA",
                 value="auto",
             ),
             questionary.Choice(
-                "Usar Ollama para sugerir nomes (se disponível)",
+                (
+                    f"Usar Ollama — {ollama.recommended} (recomendado para IA)"
+                    if ollama.recommended
+                    else "Usar Ollama para sugerir nomes"
+                ),
                 value="ollama",
                 disabled=None if ollama.reachable and ollama.models else "Ollama indisponível",
+            ),
+            questionary.Choice(
+                "Editar manualmente — revisar uma aula por vez",
+                value="manual",
             ),
         ],
     ).ask()
@@ -165,44 +586,40 @@ def review_aulas(aulas: list[AulaArquivo]) -> list[AulaArquivo]:
 
     if modo == "ollama":
         model = ollama.recommended
-        if len(ollama.models) > 1:
-            model = questionary.select(
-                "Modelo Ollama:",
-                choices=ollama.models,
-                default=ollama.recommended,
-            ).ask() or ollama.recommended
         assert model
-        console.print(f"Consultando Ollama ({model}) só com nomes de arquivo...")
+        console.print(
+            f"\n[cyan]IA local:[/cyan] usando [bold]{model}[/bold]. "
+            "Ele é o melhor modelo de texto disponível para esta tarefa."
+        )
+        console.print("[dim]Somente os nomes dos arquivos são enviados ao Ollama local.[/dim]")
+        console.print("Consultando IA...")
         try:
             suggestions = suggest_titles(
                 [a.path.name for a in aulas], model=model, host=ollama.host
             )
-            by_name = {str(s.get("arquivo")): s for s in suggestions}
-            for aula in aulas:
-                sug = by_name.get(aula.path.name)
-                if not sug:
-                    # tenta match parcial
-                    for key, val in by_name.items():
-                        if key and key in aula.path.name:
-                            sug = val
-                            break
-                if sug and sug.get("titulo"):
-                    aula.titulo = str(sug["titulo"])
-                    if int(sug.get("ordem") or 0) > 0:
-                        aula.ordem = int(sug["ordem"])
-                        aula.ordem_inferida = False
-            console.print("[green]Sugestões aplicadas. Revise abaixo.[/green]")
+            apply_suggestions(aulas, suggestions)
+            console.print("[green]✓ Sugestões aplicadas. Revise antes de continuar.[/green]")
         except Exception as exc:  # noqa: BLE001
-            console.print(f"[yellow]Ollama falhou ({exc}). Mantendo normalização local.[/yellow]")
+            console.print(f"[yellow]IA local não respondeu corretamente: {exc}[/yellow]")
+            console.print(
+                "[dim]A normalização local foi mantida. Você pode editar cada título abaixo.[/dim]"
+            )
+    elif modo == "auto":
+        console.print(
+            "\n[green]✓[/green] Normalização local aplicada. "
+            "Confira os nomes abaixo — dá para editar se algo ficou estranho."
+        )
 
-    if modo == "auto" and not any(a.ordem_inferida for a in aulas):
-        return aulas
-
-    # Revisão item a item com setas (select) + edição.
+    # Sempre revisa: local/IA podem errar e o usuário precisa poder corrigir.
     while True:
+        show_step(
+            4,
+            "Confirmar nomes das aulas",
+            "Setas para escolher · Enter para editar · continue quando estiver certo.",
+        )
         _print_aulas(aulas)
         escolha = questionary.select(
-            "Navegue com as setas. O que deseja fazer?",
+            "Selecione uma aula para editar ou continue:",
             choices=[
                 *[
                     questionary.Choice(
@@ -211,7 +628,7 @@ def review_aulas(aulas: list[AulaArquivo]) -> list[AulaArquivo]:
                     )
                     for idx, a in enumerate(aulas)
                 ],
-                questionary.Choice("OK — nomes estão corretos", value="ok"),
+                questionary.Choice("Continuar — nomes estão corretos", value="ok"),
                 questionary.Choice("Cancelar", value="cancel"),
             ],
         ).ask()
@@ -224,11 +641,11 @@ def review_aulas(aulas: list[AulaArquivo]) -> list[AulaArquivo]:
 
 
 def _print_aulas(aulas: list[AulaArquivo]) -> None:
-    table = Table(title="Aulas (pré-visualização)")
-    table.add_column("Ordem", justify="right")
-    table.add_column("Título")
-    table.add_column("Arquivo")
-    table.add_column("Tamanho", justify="right")
+    table = _make_table("Aulas (pré-visualização)")
+    table.add_column("Ordem", justify="right", no_wrap=True)
+    table.add_column("Título", overflow="fold")
+    table.add_column("Arquivo", overflow="ellipsis", max_width=42)
+    table.add_column("Tamanho", justify="right", no_wrap=True)
     for a in aulas:
         table.add_row(
             f"{a.ordem}{'*' if a.ordem_inferida else ''}",
@@ -237,6 +654,7 @@ def _print_aulas(aulas: list[AulaArquivo]) -> None:
             format_bytes(a.tamanho_bytes),
         )
     console.print(table)
+    _gap()
 
 
 def _edit_aula(aula: AulaArquivo) -> AulaArquivo:
@@ -258,14 +676,337 @@ def _edit_aula(aula: AulaArquivo) -> AulaArquivo:
     return aula
 
 
+def apply_suggestions(
+    aulas: list[AulaArquivo],
+    suggestions: list[dict[str, str | int]],
+) -> None:
+    """Aplica títulos da IA sem deixar números voltarem ao título/ordem."""
+    by_name = {str(s.get("arquivo")): s for s in suggestions}
+    for aula in aulas:
+        sug = by_name.get(aula.path.name)
+        if not sug:
+            for key, value in by_name.items():
+                if key and key in aula.path.name:
+                    sug = value
+                    break
+        if not sug or not sug.get("titulo"):
+            continue
+
+        titulo = str(sug["titulo"]).strip()
+        titulo = re.sub(
+            r"^\s*\d+(?:\.\d+)*\s*(?:[-–—_:]\s*)?",
+            "",
+            titulo,
+        ).strip()
+        if titulo:
+            aula.titulo = titulo
+
+        # A regra local é mais confiável para 9.1 → ordem 1.
+        # A IA só decide a ordem quando o arquivo não tem número.
+        suggested_order = int(sug.get("ordem") or 0)
+        if aula.ordem_inferida and suggested_order > 0:
+            aula.ordem = suggested_order
+            aula.ordem_inferida = False
+
+
+def ask_publish_status(*, force_publicar: bool = False) -> str:
+    """Pergunta se cria como publicado ou rascunho.
+
+    Returns:
+        ``"1"`` publicado ou ``"0"`` rascunho.
+    """
+    if force_publicar:
+        return "1"
+
+    _gap()
+    escolha = questionary.select(
+        "Como criar as aulas novas?",
+        choices=[
+            questionary.Choice("1) Publicar agora", value="1"),
+            questionary.Choice("2) Criar como rascunho", value="0"),
+        ],
+    ).ask()
+    if not escolha:
+        raise SystemExit(1)
+    return escolha
+
+
 def confirm_upload(plano: list[PlanoItem], *, publicar: bool) -> bool:
     criar = sum(1 for p in plano if p.acao == Acao.CRIAR)
     enviar = sum(1 for p in plano if p.acao in {Acao.ENVIAR, Acao.FORCAR})
     pular = sum(1 for p in plano if p.acao == Acao.PULAR)
     status = "Publicado" if publicar else "Rascunho"
+    _gap()
     console.print(
-        f"Resumo: [cyan]{criar}[/cyan] criar · "
-        f"[cyan]{enviar}[/cyan] enviar vídeo · "
-        f"[cyan]{pular}[/cyan] pular · status [cyan]{status}[/cyan]"
+        Panel(
+            f"[bold green]{criar}[/bold green] criar  ·  "
+            f"[bold cyan]{enviar}[/bold cyan] enviar  ·  "
+            f"[bold magenta]{pular}[/bold magenta] pular\n\n"
+            f"Status das aulas novas: [bold]{status}[/bold]",
+            title="Resumo",
+            border_style="cyan",
+            padding=(1, 2),
+        )
     )
-    return ask_yes_no("Confirma o upload no portal?", default=False)
+    _gap()
+    return ask_yes_no(
+        "Confirma o upload no portal? (N = cancelar)",
+        default=True,
+    )
+
+
+def run_upload_screen(
+    portal,
+    *,
+    capitulo_id: int,
+    plano: list[PlanoItem],
+    state,
+    status_criacao: str,
+    portal_key: str = "",
+    capitulo: CapituloResumo | None = None,
+) -> tuple[int, int, list[tuple[str, str]]]:
+    """Etapa 7: executa o upload com progresso visual."""
+    from aula_uploader.runner import executar_plano
+
+    show_step(
+        6,
+        "Enviar aulas",
+        "Criando e enviando os vídeos. Não feche o terminal até terminar.",
+    )
+    if capitulo is not None:
+        destino = f"{capitulo.nome} (ID {capitulo.id})"
+        if capitulo.curso_nome:
+            destino = f"{capitulo.curso_nome} · {destino}"
+        portal_label = PORTAL_LABELS.get(portal_key, portal_key) if portal_key else ""
+        header = Table(show_header=False, box=None, padding=(0, 1))
+        header.add_column(style="dim")
+        header.add_column()
+        if portal_label:
+            header.add_row("Portal", portal_label)
+        header.add_row("Destino", destino)
+        header.add_row(
+            "Status",
+            "Publicado" if status_criacao == "1" else "Rascunho",
+        )
+        console.print(header)
+        console.print()
+
+    reporter = _UploadReporter(total=len(plano))
+    with reporter.live:
+        ok, pulados, falhas = executar_plano(
+            portal,
+            capitulo_id=capitulo_id,
+            plano=plano,
+            state=state,
+            status_criacao=status_criacao,
+            log=reporter,
+        )
+    reporter.print_final(ok=ok, pulados=pulados, falhas=falhas, state_path=state.path)
+    return ok, pulados, falhas
+
+
+class _UploadReporter:
+    """Renderiza progresso de upload sem dump de log."""
+
+    def __init__(self, *, total: int) -> None:
+        from rich.live import Live
+        from rich.progress import (
+            BarColumn,
+            Progress,
+            SpinnerColumn,
+            TaskProgressColumn,
+            TextColumn,
+        )
+
+        self.total = max(total, 1)
+        self.current_index = 0
+        self.current_title = ""
+        self.current_action = ""
+        self.status = "Preparando..."
+        self.file_label = ""
+        self.done_lines: list[str] = []
+        self._progress = Progress(
+            SpinnerColumn(style="cyan"),
+            TextColumn("[bold]{task.description}[/bold]"),
+            BarColumn(bar_width=28, complete_style="cyan", finished_style="green"),
+            TaskProgressColumn(),
+            console=console,
+            expand=False,
+        )
+        self._task_overall = self._progress.add_task(
+            "Geral", total=self.total, completed=0
+        )
+        self._task_file = self._progress.add_task(
+            "Arquivo", total=100, completed=0, visible=False
+        )
+        self.live = Live(
+            self._render(),
+            console=console,
+            refresh_per_second=8,
+            transient=False,
+        )
+
+    def __call__(self, msg: str) -> None:
+        text = (msg or "").strip()
+        if not text:
+            return
+
+        item_match = re.match(
+            r"^\[(\d+)/(\d+)\]\s+(.+?)\s+\(([^)]+)\)\s*$",
+            text,
+        )
+        if item_match:
+            self.current_index = int(item_match.group(1))
+            self.current_title = item_match.group(3).strip()
+            self.current_action = item_match.group(4).strip()
+            self.status = f"{self.current_action}…"
+            self.file_label = ""
+            self._progress.update(
+                self._task_overall,
+                completed=self.current_index - 1,
+                description=f"Aula {self.current_index}/{self.total}",
+            )
+            self._progress.update(
+                self._task_file, completed=0, total=100, visible=False
+            )
+            self.live.update(self._render())
+            return
+
+        chunk_match = re.search(r"Chunk\s+(\d+)/(\d+)\s+\((\d+)%\)", text)
+        if chunk_match:
+            index = int(chunk_match.group(1))
+            total_chunks = int(chunk_match.group(2))
+            percent = int(chunk_match.group(3))
+            self.status = f"Enviando chunk {index}/{total_chunks}"
+            self._progress.update(
+                self._task_file,
+                completed=percent,
+                total=100,
+                visible=True,
+                description="Upload",
+            )
+            self.live.update(self._render())
+            return
+
+        upload_match = re.match(
+            r"^Upload:\s+(.+?)\s+\(([\d.]+)\s*MB,\s*(\d+)\s*chunks?\)\s*$",
+            text,
+        )
+        if upload_match:
+            name = upload_match.group(1)
+            size_mb = upload_match.group(2)
+            chunks = upload_match.group(3)
+            self.file_label = f"{name} · {size_mb} MB · {chunks} chunks"
+            self.status = "Iniciando upload…"
+            self._progress.update(
+                self._task_file, completed=0, total=100, visible=True, description="Upload"
+            )
+            self.live.update(self._render())
+            return
+
+        if text == "OK" or text.endswith(" OK"):
+            self.done_lines.append(f"[green]✓[/green] {self.current_title}")
+            self.status = "Concluída"
+            self._progress.update(self._task_overall, completed=self.current_index)
+            self._progress.update(self._task_file, completed=100, visible=False)
+            self.live.update(self._render())
+            return
+
+        if text.startswith("FALHA:"):
+            erro = text.removeprefix("FALHA:").strip()
+            self.done_lines.append(
+                f"[red]✗[/red] {self.current_title} — {erro}"
+            )
+            self.status = "Falhou"
+            self._progress.update(self._task_overall, completed=self.current_index)
+            self._progress.update(self._task_file, visible=False)
+            self.live.update(self._render())
+            return
+
+        if "Já existe" in text or "pulando" in text.lower():
+            self.done_lines.append(f"[dim]–[/dim] {self.current_title} (pulada)")
+            self.status = "Pulada"
+            self._progress.update(self._task_overall, completed=self.current_index)
+            self.live.update(self._render())
+            return
+
+        # Mensagens auxiliares curtas (criar aula, salvar conteúdo…).
+        if text.startswith("http://") or text.startswith("https://"):
+            return
+        if "URL:" in text:
+            self.status = "Upload concluído"
+            self.live.update(self._render())
+            return
+
+        cleaned = text.lstrip()
+        if len(cleaned) > 90:
+            cleaned = cleaned[:87] + "…"
+        self.status = cleaned
+        self.live.update(self._render())
+
+    def _render(self):
+        from rich.console import Group
+        from rich.text import Text
+
+        lines: list = [
+            self._progress,
+            Text(""),
+        ]
+        if self.current_title:
+            lines.append(
+                Text.from_markup(
+                    f"[bold]Agora:[/bold] {self.current_title} "
+                    f"[dim]({self.current_action})[/dim]"
+                )
+            )
+        if self.file_label:
+            lines.append(Text.from_markup(f"[dim]{self.file_label}[/dim]"))
+        lines.append(Text.from_markup(f"[cyan]{self.status}[/cyan]"))
+
+        if self.done_lines:
+            lines.append(Text(""))
+            lines.append(Text.from_markup("[bold]Concluídas[/bold]"))
+            # Mostra as últimas para não estourar a tela.
+            for line in self.done_lines[-8:]:
+                lines.append(Text.from_markup(f"  {line}"))
+            hidden = len(self.done_lines) - 8
+            if hidden > 0:
+                lines.append(Text.from_markup(f"  [dim]… e mais {hidden}[/dim]"))
+
+        return Panel(
+            Group(*lines),
+            title=f"Progresso · {self.current_index}/{self.total}",
+            border_style="cyan",
+        )
+
+    def print_final(
+        self,
+        *,
+        ok: int,
+        pulados: int,
+        falhas: list[tuple[str, str]],
+        state_path,
+    ) -> None:
+        if falhas:
+            style = "red"
+            titulo = "Upload com falhas"
+        elif ok or pulados:
+            style = "green"
+            titulo = "Upload concluído"
+        else:
+            style = "yellow"
+            titulo = "Nada enviado"
+
+        body = (
+            f"[green]{ok}[/green] ok  ·  "
+            f"[dim]{pulados}[/dim] puladas  ·  "
+            f"[red]{len(falhas)}[/red] falhas\n"
+            f"[dim]Estado: {state_path}[/dim]"
+        )
+        if falhas:
+            detalhes = "\n".join(
+                f"[red]✗[/red] {titulo_aula}: {msg}" for titulo_aula, msg in falhas
+            )
+            body += f"\n\n{detalhes}\n[dim]Retome com: aula-uploader resume[/dim]"
+        console.print()
+        console.print(Panel(body, title=titulo, border_style=style))

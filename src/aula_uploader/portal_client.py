@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,12 +14,25 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from aula_uploader.media import mask_url
-
 SESSION_COOKIE_NAMES = frozenset({"PHPSESSID", "REMEMBERME"})
 AUTH_CACHE_SECONDS = 300
+CAPITULO_PREFIX = "son_cursosbundle_capitulo"
 CONTEUDO_PREFIX = "son_cursosbundle_conteudotype"
 VIDEO_TIPO_NIVO = "12"
+
+
+@dataclass
+class CursoInfo:
+    id: int
+    nome: str
+
+
+@dataclass
+class CapituloInfo:
+    id: int
+    nome: str
+    ordem: int = 0
+    curso_id: int = 0
 
 
 @dataclass
@@ -245,6 +259,105 @@ class PortalClient:
             return selected["value"] if selected and selected.has_attr("value") else ""
         return element.get("value", "")
 
+    def _get_capitulo_token(self, form_url: str) -> str:
+        response = self.client.get(form_url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        token_input = soup.find("input", {"name": f"{CAPITULO_PREFIX}[_token]"})
+        if not token_input or not token_input.get("value"):
+            raise RuntimeError("Token do formulário de capítulo não encontrado")
+        return str(token_input["value"])
+
+    def inspect_curso(self, curso_id: int) -> CursoInfo:
+        """Consulta e confirma o curso de destino antes de criar capítulo."""
+        response = self.client.get(f"{self.base_url}/admin/curso/{curso_id}/edit")
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        title_input = soup.find("input", {"name": re.compile(r"\[nome\]$")})
+        nome = ""
+        if title_input:
+            nome = str(title_input.get("value", "")).strip()
+        if not nome:
+            heading = soup.find(["h1", "h2", "h3"])
+            nome = heading.get_text(" ", strip=True) if heading else ""
+        if not nome:
+            raise RuntimeError(f"Não foi possível identificar o nome do curso {curso_id}")
+        return CursoInfo(id=curso_id, nome=nome)
+
+    def list_capitulos(self, curso_id: int) -> list[CapituloInfo]:
+        response = self.client.get(
+            f"{self.base_url}/admin/curso/capitulo/{curso_id}/curso"
+        )
+        response.raise_for_status()
+        capitulos: list[CapituloInfo] = []
+        soup = BeautifulSoup(response.text, "html.parser")
+        for row in soup.select("table tbody tr"):
+            edit_link = row.select_one(
+                f'a[href*="/admin/curso/capitulo/"][href*="/edit/{curso_id}/curso"]'
+            )
+            if not edit_link:
+                continue
+            href = str(edit_link.get("href", ""))
+            parts = href.strip("/").split("/")
+            try:
+                capitulo_id = int(parts[parts.index("capitulo") + 1])
+            except (ValueError, IndexError):
+                continue
+            cells = [cell.get_text(strip=True) for cell in row.find_all("td")]
+            nome = cells[1] if len(cells) > 1 else ""
+            ordem = int(cells[2]) if len(cells) > 2 and cells[2].isdigit() else 0
+            capitulos.append(
+                CapituloInfo(
+                    id=capitulo_id,
+                    nome=nome,
+                    ordem=ordem,
+                    curso_id=curso_id,
+                )
+            )
+        return capitulos
+
+    def create_capitulo(
+        self,
+        curso_id: int,
+        nome: str,
+        ordem: int,
+        *,
+        bunny_folder_id: str,
+    ) -> CapituloInfo:
+        """Cria capítulo vinculado a uma pasta Bunny já existente."""
+        before_ids = {chapter.id for chapter in self.list_capitulos(curso_id)}
+        form_url = f"{self.base_url}/admin/curso/capitulo/new/{curso_id}/curso"
+        token = self._get_capitulo_token(form_url)
+        response = self.client.post(
+            f"{self.base_url}/admin/curso/capitulo/{curso_id}/curso",
+            data={
+                f"{CAPITULO_PREFIX}[nome]": nome,
+                f"{CAPITULO_PREFIX}[ordem]": str(ordem),
+                f"{CAPITULO_PREFIX}[finalizado]": "1",
+                f"{CAPITULO_PREFIX}[ativo]": "1",
+                f"{CAPITULO_PREFIX}[gerenciamentoProgresso]": "1",
+                f"{CAPITULO_PREFIX}[bunnyFolderId]": bunny_folder_id,
+                f"{CAPITULO_PREFIX}[_token]": token,
+            },
+            follow_redirects=False,
+        )
+        if response.status_code not in (302, 303):
+            raise RuntimeError(
+                f"Criação do capítulo falhou (HTTP {response.status_code})"
+            )
+
+        created = [
+            chapter
+            for chapter in self.list_capitulos(curso_id)
+            if chapter.id not in before_ids
+            and chapter.nome.strip().casefold() == nome.strip().casefold()
+        ]
+        if not created:
+            raise RuntimeError(
+                f"Capítulo '{nome}' não foi encontrado após a criação."
+            )
+        return max(created, key=lambda chapter: chapter.id)
+
     def _get_conteudo_token(self, form_url: str) -> str:
         response = self.client.get(form_url)
         response.raise_for_status()
@@ -307,48 +420,72 @@ class PortalClient:
         return linhas
 
     def inspect_capitulo(self, capitulo_id: int) -> CapituloResumo:
-        """Consulta a página do capítulo e tenta obter nome/curso."""
+        """Consulta o capítulo e resolve nome real + curso (nome e ID)."""
         url = f"{self.base_url}/admin/curso/conteudo/{capitulo_id}/capitulo"
         response = self.client.get(url)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
+
+        curso_id = self._extract_curso_id_from_conteudo_page(soup, capitulo_id)
         nome = ""
-        h1 = soup.find(["h1", "h2", "h3"])
-        if h1:
-            nome = h1.get_text(" ", strip=True)
-        curso_id = None
         curso_nome = ""
-        breadcrumb = soup.select_one(".breadcrumb, ol.breadcrumb, nav")
-        if breadcrumb:
-            links = breadcrumb.find_all("a")
-            for link in links:
-                href = link.get("href", "")
-                if "/admin/curso/" in href and href.rstrip("/").endswith("/edit"):
-                    parts = href.strip("/").split("/")
-                    if len(parts) >= 2 and parts[-2].isdigit():
-                        curso_id = int(parts[-2])
-                        curso_nome = link.get_text(strip=True)
-                        break
-                if "/admin/curso/capitulo/" in href and "/curso" in href:
-                    parts = href.strip("/").split("/")
-                    try:
-                        idx = parts.index("curso")
-                        if idx > 0 and parts[idx - 1].isdigit() is False:
-                            pass
-                        # .../capitulo/{curso_id}/curso
-                        if parts[-1] == "curso" and parts[-2].isdigit():
-                            curso_id = int(parts[-2])
-                            curso_nome = link.get_text(strip=True) or curso_nome
-                    except ValueError:
-                        pass
-        if not nome:
-            nome = f"Capítulo {capitulo_id}"
+
+        if curso_id is not None:
+            nome = self._get_capitulo_nome(capitulo_id, curso_id) or ""
+            try:
+                curso_nome = self.inspect_curso(curso_id).nome
+            except Exception:  # noqa: BLE001 - fallback abaixo
+                curso_nome = ""
+
+        if not nome or nome.strip().casefold() in {"conteúdo", "conteudo"}:
+            heading = soup.find(["h1", "h2", "h3"])
+            heading_text = heading.get_text(" ", strip=True) if heading else ""
+            if heading_text and heading_text.casefold() not in {"conteúdo", "conteudo"}:
+                nome = heading_text
+            else:
+                nome = f"Capítulo {capitulo_id}"
+
         return CapituloResumo(
             id=capitulo_id,
             nome=nome,
             curso_id=curso_id,
             curso_nome=curso_nome,
         )
+
+    def _extract_curso_id_from_conteudo_page(
+        self, soup: BeautifulSoup, capitulo_id: int
+    ) -> int | None:
+        for link in soup.find_all("a", href=True):
+            href = str(link.get("href", ""))
+            match = re.search(
+                rf"/admin/curso/capitulo/{capitulo_id}/edit/(\d+)/curso",
+                href,
+            )
+            if match:
+                return int(match.group(1))
+
+        for link in soup.find_all("a", href=True):
+            href = str(link.get("href", ""))
+            if "/edit/" in href:
+                continue
+            match = re.search(r"/admin/curso/capitulo/(\d+)/curso(?:\?|$|/)", href)
+            if match:
+                return int(match.group(1))
+
+        for link in soup.find_all("a", href=True):
+            href = str(link.get("href", ""))
+            match = re.search(r"/admin/curso/(\d+)/edit(?:\?|$|/)", href)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _get_capitulo_nome(self, capitulo_id: int, curso_id: int) -> str:
+        response = self.client.get(
+            f"{self.base_url}/admin/curso/capitulo/{capitulo_id}/edit/{curso_id}/curso"
+        )
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        return self._field_value(soup, f"{CAPITULO_PREFIX}[nome]").strip()
 
     def get_conteudo(self, conteudo_id: int, *, retries: int = 3) -> ConteudoData:
         url = f"{self.base_url}/admin/curso/conteudo/{conteudo_id}/edit"
@@ -668,7 +805,7 @@ class PortalClient:
         if not s3_url:
             raise RuntimeError("Upload concluído, mas a URL S3 não foi retornada")
         if log:
-            log(f"Upload concluído. URL: {mask_url(s3_url)}")
+            log("Upload concluído.")
         return s3_url
 
     def upload_aula_video(

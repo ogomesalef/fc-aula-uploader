@@ -19,6 +19,22 @@ def test_parse_devops_style():
     assert titulo == "Docker K8s"
 
 
+def test_parse_hierarchical_number_with_en_dash():
+    ordem, titulo = parse_nome_aula(
+        "9.1–O problema de segurança em sistemas com IA.mp4"
+    )
+    assert ordem == 1
+    assert titulo == "O Problema de Segurança em Sistemas com IA"
+
+
+def test_parse_hierarchical_number_with_hyphen():
+    ordem, titulo = parse_nome_aula(
+        "9.3-Mapeando o threat model do projeto atual.mkv"
+    )
+    assert ordem == 3
+    assert titulo == "Mapeando o Threat Model do Projeto Atual"
+
+
 def test_listar_videos(tmp_path):
     (tmp_path / "2-segunda.mp4").write_bytes(b"x")
     (tmp_path / "1-primeira.mp4").write_bytes(b"x")

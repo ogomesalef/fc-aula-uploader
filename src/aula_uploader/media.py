@@ -79,6 +79,39 @@ def enrich_durations(aulas: list) -> None:
             aula.duracao_segundos = probe_duration_seconds(aula.path)
 
 
+def normalize_user_path(raw: str) -> Path:
+    """Normaliza caminho colado/arrastado no terminal.
+
+    Aceita aspas e escapes de shell (ex.: ``Full\\ Cycle`` → ``Full Cycle``).
+    """
+    text = (raw or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        text = text[1:-1].strip()
+
+    # Escapes comuns ao arrastar pasta no macOS/Linux.
+    for escaped, plain in (
+        (r"\ ", " "),
+        (r"\(", "("),
+        (r"\)", ")"),
+        (r"\[", "["),
+        (r"\]", "]"),
+        (r"\&", "&"),
+        (r"\'", "'"),
+        (r'\"', '"'),
+    ):
+        text = text.replace(escaped, plain)
+
+    path = Path(text).expanduser()
+    if path.exists():
+        return path
+
+    # Fallback: se ainda restar barra invertida literal, tenta sem ela.
+    alt = Path(text.replace("\\", "")).expanduser()
+    if alt.exists():
+        return alt
+    return path
+
+
 def is_zip(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() == ".zip"
 
