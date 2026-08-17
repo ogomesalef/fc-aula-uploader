@@ -1,0 +1,43 @@
+# Credenciais e ambiente
+.env
+.env.*
+!.env.example
+
+# Sessões e estado local
+.sessions/
+data/
+*.session.json
+upload_state*.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Extrações e mídia
+*.zip
+!fixtures/**/*.zip
+.tmp/
+tmp/
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.m4v
+*.webm
+
+# Logs e SO
+*.log
+.DS_Store
+Thumbs.db
