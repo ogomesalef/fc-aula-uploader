@@ -2,7 +2,7 @@
 
 Ferramenta local para criar capítulos, organizar vídeos e enviar aulas ao portal.
 
-A interface web (`aula-uploader web`) roda só neste computador (`127.0.0.1`). A pasta de vídeo no Bunny precisa existir antes; o capítulo pode ser criado ou reutilizado.
+A pasta de vídeo no Bunny precisa existir antes; o capítulo pode ser criado ou reutilizado.
 
 Precisa de **Python 3.10+**, **ffmpeg** e login de **admin** do portal.
 
