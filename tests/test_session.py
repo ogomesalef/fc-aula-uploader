@@ -90,7 +90,24 @@ def test_portal_2_herda_credenciais_quando_nao_tem_proprias(monkeypatch):
     assert (user, pwd) == ("alguem@example.com", "senha-de-teste")
 
 
+class _TTYFalso:
+    """stdin de mentira que se diz interativo."""
+
+    @staticmethod
+    def isatty() -> bool:
+        return True
+
+
+def _com_terminal(monkeypatch) -> None:
+    monkeypatch.setattr(session_mod.sys, "stdin", _TTYFalso())
+
+
+def _sem_terminal(monkeypatch) -> None:
+    monkeypatch.setattr(session_mod.sys, "stdin", None)
+
+
 def test_allow_env_false_ignora_o_env_e_pergunta(monkeypatch):
+    _com_terminal(monkeypatch)
     monkeypatch.setenv("PORTAL_USERNAME", "doenv@example.com")
     monkeypatch.setenv("PORTAL_PASSWORD", "senha-do-env")
     monkeypatch.setattr("builtins.input", lambda *_: "digitado@example.com")
@@ -114,3 +131,47 @@ def test_allow_env_true_nao_pergunta_nada(monkeypatch):
 
     _base, user, pwd = prompt_credentials_if_needed("fullcycle", allow_env=True)
     assert (user, pwd) == ("doenv@example.com", "senha-do-env")
+
+
+# ---------------------------------------------------------------------------
+# Regressão: o worker destacado travava para sempre num input() sem TTY.
+# O envio ficava "enviando · 0%" e nada acontecia.
+# ---------------------------------------------------------------------------
+
+
+def _nunca_pergunta(*_args, **_kwargs):
+    raise AssertionError("não deveria perguntar nada aqui")
+
+
+def test_com_sessao_salva_nao_pergunta_usuario_nem_senha(monkeypatch):
+    """É o caminho do worker: cookies bastam, credencial é opcional."""
+    _sem_terminal(monkeypatch)
+    monkeypatch.setattr("builtins.input", _nunca_pergunta)
+    monkeypatch.setattr(session_mod.getpass, "getpass", _nunca_pergunta)
+
+    _base, user, pwd = prompt_credentials_if_needed(
+        "fullcycle", allow_env=False, allow_empty_password=True
+    )
+    assert (user, pwd) == ("", "")
+
+
+def test_sem_terminal_falha_rapido_em_vez_de_travar(monkeypatch):
+    _sem_terminal(monkeypatch)
+    monkeypatch.setattr("builtins.input", _nunca_pergunta)
+    monkeypatch.setattr(session_mod.getpass, "getpass", _nunca_pergunta)
+
+    with pytest.raises(RuntimeError, match="não há terminal"):
+        prompt_credentials_if_needed("fullcycle", allow_env=False)
+
+
+def test_stdin_nao_interativo_tambem_falha_rapido(monkeypatch):
+    class _Pipe:
+        @staticmethod
+        def isatty() -> bool:
+            return False
+
+    monkeypatch.setattr(session_mod.sys, "stdin", _Pipe())
+    monkeypatch.setattr("builtins.input", _nunca_pergunta)
+
+    with pytest.raises(RuntimeError, match="não há terminal"):
+        prompt_credentials_if_needed("fullcycle", allow_env=False)

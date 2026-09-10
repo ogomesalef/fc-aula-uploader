@@ -17,6 +17,9 @@ dependencies = [
   "python-dotenv>=1.0,<2",
   "rich>=13.7,<15",
   "questionary>=2.0,<3",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.32,<1",
+  "python-multipart>=0.0.9,<1",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +36,7 @@ aula-uploader = "aula_uploader.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-aula_uploader = ["data/*.json"]
+aula_uploader = ["data/*.json", "web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -53,4 +56,4 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S105", "S106"]  # senhas fictícias nos testes
+"tests/*" = ["S105", "S106", "S107"]  # senhas fictícias nos testes

@@ -17,7 +17,6 @@ from aula_uploader.batch import BatchChapterDraft
 from aula_uploader.catalog import CatalogStore, matches_search, nome_sort_key
 from aula_uploader.media import format_bytes, format_duration
 from aula_uploader.naming import AulaArquivo
-from aula_uploader.ollama_client import detect_ollama, suggest_titles
 from aula_uploader.plan import (
     Acao,
     PlanoItem,
@@ -471,6 +470,10 @@ def capitulo_admin_url(base_url: str, capitulo_id: int) -> str:
     return f"{base_url.rstrip('/')}/admin/curso/conteudo/{capitulo_id}/capitulo"
 
 
+def conteudo_admin_url(base_url: str, conteudo_id: int) -> str:
+    return f"{base_url.rstrip('/')}/admin/curso/conteudo/{conteudo_id}/edit"
+
+
 def curso_admin_url(base_url: str, curso_id: int) -> str:
     return f"{base_url.rstrip('/')}/admin/curso/capitulo/{curso_id}/curso"
 
@@ -866,24 +869,13 @@ def ask_yes_no(prompt: str, *, default: bool = True) -> bool:
     )
 
 
-def show_environment(*, ollama_info=None) -> None:
+def show_environment() -> None:
     from aula_uploader.media import ffprobe_available
 
     table = _make_table("Ambiente", show_header=False)
     table.add_column("Item", style="bold", no_wrap=True)
     table.add_column("Status")
     table.add_row("ffprobe (duração)", "ok" if ffprobe_available() else "ausente (opcional)")
-    if ollama_info is None:
-        ollama_info = detect_ollama()
-    if ollama_info.reachable:
-        models = ", ".join(ollama_info.models[:5]) or "(nenhum)"
-        rec = ollama_info.recommended or "—"
-        table.add_row("Ollama", f"ok — modelos: {models}")
-        table.add_row("Modelo sugerido", rec)
-    elif ollama_info.installed:
-        table.add_row("Ollama", "instalado, mas não responde em 127.0.0.1:11434")
-    else:
-        table.add_row("Ollama", "não instalado (opcional)")
     console.print(table)
     _gap()
 
@@ -971,29 +963,19 @@ def show_duplicate_warning(aulas: list[AulaArquivo]) -> dict[str, list[str]]:
 
 def review_aulas(aulas: list[AulaArquivo]) -> list[AulaArquivo]:
     """Escolhe normalização e sempre deixa revisar/editar os nomes."""
-    ollama = detect_ollama()
     show_step(
         4,
         "Revisar nomes das aulas",
         "Escolha como preparar os títulos e confirme se ficou certo.",
     )
-    show_environment(ollama_info=ollama)
+    show_environment()
 
     modo = questionary.select(
         "Como deseja preparar os títulos?",
         choices=[
             questionary.Choice(
-                "Normalização local — rápida, sem IA",
+                "Normalização local — rápida",
                 value="auto",
-            ),
-            questionary.Choice(
-                (
-                    f"Usar Ollama — {ollama.recommended} (recomendado para IA)"
-                    if ollama.recommended
-                    else "Usar Ollama para sugerir nomes"
-                ),
-                value="ollama",
-                disabled=None if ollama.reachable and ollama.models else "Ollama indisponível",
             ),
             questionary.Choice(
                 "Editar manualmente — revisar uma aula por vez",
@@ -1004,33 +986,13 @@ def review_aulas(aulas: list[AulaArquivo]) -> list[AulaArquivo]:
     if not modo:
         raise SystemExit(1)
 
-    if modo == "ollama":
-        model = ollama.recommended
-        assert model
-        console.print(
-            f"\n[cyan]IA local:[/cyan] usando [bold]{model}[/bold]. "
-            "Ele é o melhor modelo de texto disponível para esta tarefa."
-        )
-        console.print("[dim]Somente os nomes dos arquivos são enviados ao Ollama local.[/dim]")
-        console.print("Consultando IA...")
-        try:
-            suggestions = suggest_titles(
-                [a.path.name for a in aulas], model=model, host=ollama.host
-            )
-            apply_suggestions(aulas, suggestions)
-            console.print("[green]✓ Sugestões aplicadas. Revise antes de continuar.[/green]")
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[yellow]IA local não respondeu corretamente: {exc}[/yellow]")
-            console.print(
-                "[dim]A normalização local foi mantida. Você pode editar cada título abaixo.[/dim]"
-            )
-    elif modo == "auto":
+    if modo == "auto":
         console.print(
             "\n[green]✓[/green] Normalização local aplicada. "
             "Confira os nomes abaixo — dá para editar se algo ficou estranho."
         )
 
-    # Sempre revisa: local/IA podem errar e o usuário precisa poder corrigir.
+    # Sempre revisa: a normalização pode errar e o usuário precisa poder corrigir.
     while True:
         show_step(
             4,

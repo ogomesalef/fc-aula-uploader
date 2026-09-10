@@ -87,6 +87,16 @@ def parse_nome_aula(filename: str) -> tuple[int | None, str]:
     """
     stem = Path(filename).stem
 
+    # yt-dlp: "Título (Aula 3) [id] [616+251]"
+    aula_mark = re.search(r"\(\s*aula\s+(\d+)\s*\)", stem, flags=re.IGNORECASE)
+    if aula_mark:
+        ordem = int(aula_mark.group(1))
+        title = f"{stem[:aula_mark.start()]} {stem[aula_mark.end():]}"
+        title = re.sub(r"\[[^\[\]]*\]", " ", title)
+        title = re.sub(r"[\s_.:：\-–—]+", " ", title).strip()
+        title_tokens = [t for t in re.split(r"\s+", title) if t]
+        return ordem, _title_case(title_tokens) if title_tokens else stem
+
     # Numeração hierárquica no começo do arquivo:
     #   9.1–O problema...  -> ordem 1, "O problema..."
     #   9.3-Mapeando...    -> ordem 3, "Mapeando..."
@@ -143,16 +153,24 @@ def listar_videos(
 
     aceitas = {e.lower() for e in (extensoes or VIDEO_EXTENSIONS)}
     if recursivo:
-        arquivos = sorted(
+        arquivos = [
             p
             for p in pasta.rglob("*")
             if p.is_file() and p.suffix.lower() in aceitas
-        )
+        ]
     else:
-        arquivos = sorted(
+        arquivos = [
             p for p in pasta.iterdir() if p.is_file() and p.suffix.lower() in aceitas
-        )
+        ]
+    return aulas_de_caminhos(arquivos)
 
+
+def aulas_de_caminhos(caminhos: list[Path]) -> list[AulaArquivo]:
+    """Monta a lista a partir de arquivos avulsos, já na ordem das aulas."""
+    arquivos = sorted(
+        {p.expanduser().resolve() for p in caminhos if p.is_file()},
+        key=lambda p: p.name.casefold(),
+    )
     com_numero: list[AulaArquivo] = []
     sem_numero: list[AulaArquivo] = []
 

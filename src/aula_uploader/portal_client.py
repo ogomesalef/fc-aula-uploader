@@ -155,6 +155,14 @@ class ConteudoData:
     extra: dict[str, str] = field(default_factory=dict)
 
 
+class ConteudoUploadError(RuntimeError):
+    """Falha depois que o conteúdo já foi criado no portal."""
+
+    def __init__(self, message: str, *, conteudo_id: int | None = None):
+        super().__init__(message)
+        self.conteudo_id = conteudo_id
+
+
 class PortalClient:
     CHUNK_SIZE = 90 * 1024 * 1024
     MAX_REDIRECTS = 5
@@ -197,21 +205,34 @@ class PortalClient:
     def __exit__(self, *args: object) -> None:
         self.close()
 
+    def _portal_host(self) -> str:
+        return (urlparse(self.base_url).hostname or "").casefold()
+
     def _is_portal_url(self, url: httpx.URL) -> bool:
-        expected = urlparse(self.base_url).hostname or ""
-        return url.scheme == "https" and (url.host or "") == expected
+        return url.scheme == "https" and (url.host or "").casefold() == self._portal_host()
 
     def _follow(self, response: httpx.Response) -> httpx.Response:
         """Segue redirects só dentro do host do portal."""
         for _ in range(self.MAX_REDIRECTS):
             if response.next_request is None:
                 return response
-            if not self._is_portal_url(response.next_request.url):
+            nxt = response.next_request
+            url = nxt.url
+            if (url.host or "").casefold() != self._portal_host():
                 raise RuntimeError(
                     "Redirect para fora do portal foi bloqueado "
-                    f"({response.next_request.url.host})"
+                    f"({url.host})"
                 )
-            response = self.client.send(response.next_request)
+            if url.scheme != "https":
+                # login_check às vezes devolve Location em http no mesmo host.
+                url = url.copy_with(scheme="https")
+                headers = [
+                    (key, value)
+                    for key, value in nxt.headers.multi_items()
+                    if key.lower() != "host"
+                ]
+                nxt = httpx.Request(nxt.method, url, headers=headers)
+            response = self.client.send(nxt)
         raise RuntimeError("Excesso de redirects do portal")
 
     def _get(self, url: str, **kwargs: Any) -> httpx.Response:
@@ -227,6 +248,9 @@ class PortalClient:
             payload = json.loads(self.session_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return
+        saved_user = str(payload.get("username") or "").strip()
+        if saved_user and not self.username:
+            self.username = saved_user
         for item in payload.get("cookies", []):
             self.client.cookies.set(
                 item["name"],
@@ -286,7 +310,14 @@ class PortalClient:
             )
         self.session_path.parent.mkdir(parents=True, exist_ok=True)
         self.session_path.write_text(
-            json.dumps({"cookies": cookies}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    "username": self.username or "",
+                    "cookies": cookies,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
         try:
@@ -909,6 +940,7 @@ class PortalClient:
         *,
         log: Callable[[str], None] | None = None,
         chunk_timeout: float = 300.0,
+        on_chunk: Callable[[int, int], None] | None = None,
     ) -> str:
         video_path = Path(video_path)
         if not video_path.exists():
@@ -931,6 +963,8 @@ class PortalClient:
                 progress = round(100 * index / total_chunks)
                 if log:
                     log(f"  Chunk {index}/{total_chunks} ({progress}%)...")
+                if on_chunk:
+                    on_chunk(index, total_chunks)
                 response = self._post(
                     upload_url,
                     files={"file": (filename, chunk_data, "application/octet-stream")},
@@ -956,6 +990,20 @@ class PortalClient:
             log("Upload concluído.")
         return s3_url
 
+    @staticmethod
+    def conteudo_pronto_para_play(conteudo: ConteudoData) -> bool:
+        """True quando o player (Bunny/Nivo) já dá para assistir."""
+        bunny = (conteudo.video_url_bunny or "").strip()
+        if not bunny:
+            return False
+        low = bunny.casefold()
+        return (
+            "mediadelivery.net" in low
+            or "b-cdn.net" in low
+            or "bunny" in low
+            or low.startswith("http")
+        )
+
     def upload_aula_video(
         self,
         conteudo_id: int,
@@ -964,37 +1012,132 @@ class PortalClient:
         capitulo_id: int | None = None,
         log: Callable[[str], None] | None = None,
         chunk_timeout: float = 300.0,
-    ) -> None:
+        on_chunk: Callable[[int, int], None] | None = None,
+        on_status: Callable[[str], None] | None = None,
+    ) -> str:
+        """Sobe o vídeo e salva a URL S3. Retorna ``pronto`` ou ``processando``.
+
+        Igual ao fc-admin: salvar a URL no conteúdo já dispara o Nivo/MediaConvert.
+        O player (videoUrlBunny) pode demorar — isso não é falha.
+        """
         s3_url = self.upload_video_chunked(
-            video_path, log=log, chunk_timeout=chunk_timeout
+            video_path, log=log, chunk_timeout=chunk_timeout, on_chunk=on_chunk
         )
+        # 1) arquivo no S3  2) amarra URL no portal  3) Nivo processa  4) link pronto
+        if on_status:
+            on_status("salvando")
         if log:
             log(f"Salvando conteúdo {conteudo_id}...")
         prev_timeout = self.client.timeout
         try:
             self.client.timeout = 120.0
             self.salvar_url_s3_nivo(conteudo_id, s3_url)
+            # Save no portal ok → Nivo/MediaConvert já foi disparado.
+            if on_status:
+                on_status("processando")
             if capitulo_id is None:
                 capitulo_id = self.get_conteudo_capitulo_id(conteudo_id)
             if capitulo_id is None:
                 raise RuntimeError(
                     f"Não foi possível determinar o capítulo do conteúdo {conteudo_id}"
                 )
-            for _ in range(36):
+            # Espera curta só para a tabela refletir o vínculo (não o encode).
+            for _ in range(12):
                 if self._conteudo_tem_video_na_tabela(capitulo_id, conteudo_id):
                     break
                 time.sleep(5.0)
             else:
+                if log:
+                    log("Portal ainda sem ícone de vídeo — salvando de novo...")
+                if on_status:
+                    on_status("salvando")
+                self.salvar_url_s3_nivo(conteudo_id, s3_url)
+                if on_status:
+                    on_status("processando")
+                time.sleep(3.0)
+
+            try:
                 conteudo = self.get_conteudo(conteudo_id)
-                if not conteudo.url_s3_nivo and not conteudo.video_url_bunny:
-                    raise RuntimeError(
-                        f"Upload concluído, mas o conteúdo {conteudo_id} "
-                        "não ficou com vídeo após salvar."
+            except Exception:  # noqa: BLE001
+                # Durante o MediaConvert o /edit às vezes oscila — upload já foi.
+                if log:
+                    log(
+                        f"Vídeo enviado (conteúdo {conteudo_id}); "
+                        "Nivo processando (formulário instável)."
                     )
+                return "processando"
+
+            if self.conteudo_pronto_para_play(conteudo):
+                if log:
+                    log(f"Aula pronta para play (conteúdo {conteudo_id}).")
+                return "pronto"
+
+            # fc-admin: se a URL S3 ou o Bunny já estão no form, sucesso.
+            if conteudo.url_s3_nivo or conteudo.video_url_bunny:
+                if log:
+                    log(
+                        f"Vídeo no Nivo (conteúdo {conteudo_id}) — "
+                        "processando; dá para seguir a próxima aula."
+                    )
+                return "processando"
+
+            if self._conteudo_tem_video_na_tabela(capitulo_id, conteudo_id):
+                if log:
+                    log(
+                        f"Vídeo vinculado (conteúdo {conteudo_id}) — "
+                        "aguardando encode no Nivo."
+                    )
+                return "processando"
+
+            # O save não lançou erro; o form pode estar vazio no meio do convert.
+            # Não marcar falha — o Nivo costuma continuar e o player aparece depois.
+            if log:
+                log(
+                    f"Upload do conteúdo {conteudo_id} salvo; "
+                    "aguardando o Nivo processar (não é falha)."
+                )
+            return "processando"
+        except ConteudoUploadError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ConteudoUploadError(str(exc), conteudo_id=conteudo_id) from exc
         finally:
             self.client.timeout = prev_timeout
-        if log:
-            log(f"Aula atualizada (conteúdo {conteudo_id}).")
+
+    def aguardar_nivo_pronto(
+        self,
+        conteudo_id: int,
+        *,
+        capitulo_id: int | None = None,
+        log: Callable[[str], None] | None = None,
+        tentativas: int = 60,
+        intervalo: float = 15.0,
+    ) -> bool:
+        """Espera o player Bunny/Nivo ficar utilizável."""
+        for i in range(tentativas):
+            try:
+                conteudo = self.get_conteudo(conteudo_id)
+            except Exception:  # noqa: BLE001
+                conteudo = None
+            if conteudo is not None and self.conteudo_pronto_para_play(conteudo):
+                if log:
+                    log(f"Nivo pronto (conteúdo {conteudo_id}).")
+                return True
+            if capitulo_id is not None and self._conteudo_tem_video_na_tabela(
+                capitulo_id, conteudo_id
+            ):
+                # Tabela com tempo/link já costuma bastar para o aluno assistir.
+                if conteudo is not None and (
+                    conteudo.tempo not in ("", "00:00", "---")
+                    or self.conteudo_pronto_para_play(conteudo)
+                ):
+                    if log:
+                        log(f"Vídeo disponível na tabela (conteúdo {conteudo_id}).")
+                    return True
+            if log and i > 0 and i % 4 == 0:
+                log(f"  Ainda processando no Nivo (conteúdo {conteudo_id})...")
+            time.sleep(intervalo)
+        return False
 
     def criar_aula_com_video(
         self,
@@ -1007,7 +1150,9 @@ class PortalClient:
         tipo: str = VIDEO_TIPO_NIVO,
         log: Callable[[str], None] | None = None,
         chunk_timeout: float = 300.0,
-    ) -> int:
+        on_chunk: Callable[[int, int], None] | None = None,
+        on_status: Callable[[str], None] | None = None,
+    ) -> tuple[int, str]:
         video_path = Path(video_path)
         if not video_path.exists():
             raise FileNotFoundError(f"Arquivo não encontrado: {video_path}")
@@ -1019,11 +1164,21 @@ class PortalClient:
         novo_id = self.create_conteudo(capitulo_id, conteudo)
         if log:
             log(f"Aula criada com ID {novo_id}.")
-        self.upload_aula_video(
-            novo_id,
-            video_path,
-            capitulo_id=capitulo_id,
-            log=log,
-            chunk_timeout=chunk_timeout,
-        )
-        return novo_id
+        if on_status:
+            # Grava o ID na UI antes do upload do arquivo.
+            on_status(f"conteudo:{novo_id}")
+        try:
+            fase = self.upload_aula_video(
+                novo_id,
+                video_path,
+                capitulo_id=capitulo_id,
+                log=log,
+                chunk_timeout=chunk_timeout,
+                on_chunk=on_chunk,
+                on_status=on_status,
+            )
+        except ConteudoUploadError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ConteudoUploadError(str(exc), conteudo_id=novo_id) from exc
+        return novo_id, fase

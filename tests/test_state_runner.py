@@ -132,10 +132,23 @@ class _PortalFake:
 
     def upload_aula_video(self, conteudo_id, path, **kwargs):
         self.criados.append(("upload", conteudo_id))
+        return "pronto"
 
     def criar_aula_com_video(self, capitulo_id, titulo, ordem, path, **kwargs):
         self.criados.append(("criar", titulo))
-        return 500 + ordem
+        return 500 + ordem, "pronto"
+
+    def get_conteudo(self, conteudo_id, **kwargs):
+        from aula_uploader.portal_client import ConteudoData
+
+        return ConteudoData(
+            titulo="x",
+            ordem=1,
+            video_url_bunny="https://player.mediadelivery.net/embed/1/abc",
+        )
+
+    def _conteudo_tem_video_na_tabela(self, capitulo_id, conteudo_id):
+        return True
 
 
 def test_executar_plano_falha_sem_id_em_vez_de_assert(tmp_path):
@@ -181,6 +194,66 @@ def test_executar_plano_marca_pulado_e_criado(tmp_path):
     )
     assert (ok, pulados, falhas) == (1, 1, [])
     assert portal.criados == [("criar", "Dois")]
+
+
+    def get_conteudo(self, conteudo_id, **kwargs):
+        from aula_uploader.portal_client import ConteudoData
+
+        return ConteudoData(
+            titulo="x",
+            ordem=1,
+            tipo="12",
+            video_url_bunny="https://player.mediadelivery.net/embed/1/abc",
+        )
+
+    def _conteudo_tem_video_na_tabela(self, capitulo_id, conteudo_id):
+        return True
+
+
+class _PortalProcessando(_PortalFake):
+    def upload_aula_video(self, conteudo_id, path, **kwargs):
+        self.criados.append(("upload", conteudo_id))
+        return "processando"
+
+    def criar_aula_com_video(self, capitulo_id, titulo, ordem, path, **kwargs):
+        self.criados.append(("criar", titulo))
+        return 700 + ordem, "processando"
+
+    def get_conteudo(self, conteudo_id, **kwargs):
+        from aula_uploader.portal_client import ConteudoData
+
+        # Ainda sem Bunny — continua processando.
+        return ConteudoData(titulo="x", ordem=1, tipo="12", url_s3_nivo="https://s3/x")
+
+    def _conteudo_tem_video_na_tabela(self, capitulo_id, conteudo_id):
+        return False
+
+
+def test_executar_plano_marca_processando_sem_falha(tmp_path):
+    aula = AulaArquivo(path=tmp_path / "1.mp4", ordem=1, titulo="Um")
+    (tmp_path / "1.mp4").write_bytes(b"x")
+    plano = [PlanoItem(aula=aula, acao=Acao.CRIAR)]
+    state = build_state(
+        portal="fullcycle",
+        capitulo_id=60,
+        pasta=tmp_path,
+        plano=plano,
+        status_criacao="0",
+        force=False,
+    )
+    ok, pulados, falhas = executar_plano(
+        _PortalProcessando(),
+        capitulo_id=60,
+        plano=plano,
+        state=state,
+        wait_nivo=False,
+    )
+    assert falhas == []
+    assert pulados == 0
+    assert ok == 0
+    loaded = UploadState.load("fullcycle", 60)
+    assert loaded.items[0].status == "processing"
+    assert loaded.items[0].conteudo_id == 701
 
 
 def test_only_pending_nao_reenvia_o_que_ja_terminou(tmp_path):

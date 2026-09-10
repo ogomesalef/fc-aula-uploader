@@ -35,6 +35,16 @@ def test_parse_hierarchical_number_with_hyphen():
     assert titulo == "Mapeando o Threat Model do Projeto Atual"
 
 
+def test_parse_aula_youtube_com_tags():
+    ordem, titulo = parse_nome_aula(
+        "Agentes de IA na Prática： LangChain + LangGraph (Aula 3) [HidDgc9iSZ4] [616+251].mkv"
+    )
+    assert ordem == 3
+    assert titulo.startswith("Agentes de IA na Prática")
+    assert "HidDgc9iSZ4" not in titulo
+    assert "616" not in titulo
+
+
 def test_listar_videos(tmp_path):
     (tmp_path / "2-segunda.mp4").write_bytes(b"x")
     (tmp_path / "1-primeira.mp4").write_bytes(b"x")

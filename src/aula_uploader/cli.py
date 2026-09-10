@@ -18,7 +18,6 @@ from aula_uploader.media import (
     resolve_source,
 )
 from aula_uploader.naming import listar_videos
-from aula_uploader.ollama_client import detect_ollama
 from aula_uploader.plan import montar_plano, parse_capitulo_id
 from aula_uploader.portal_client import CapituloResumo, ConteudoLinha, PortalClient
 from aula_uploader.runner import build_state, executar_plano
@@ -96,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="cmd")
 
-    sub.add_parser("doctor", help="Checa Python, ffprobe e Ollama")
+    sub.add_parser("doctor", help="Checa Python e ffprobe")
     sub.add_parser("logout", help="Apaga sessões salvas localmente")
 
     p_assist = sub.add_parser("assistente", help="Fluxo interativo (padrão)")
@@ -120,6 +119,25 @@ def main(argv: list[str] | None = None) -> int:
     _add_use_env(p_resume)
     p_resume.add_argument("--capitulo", required=True, type=parse_capitulo_id)
 
+    p_web = sub.add_parser(
+        "web",
+        help="Interface no navegador (só neste computador, 127.0.0.1)",
+    )
+    p_web.add_argument("--port", type=int, default=8787)
+    p_web.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Não abrir o navegador sozinho",
+    )
+    sub.add_parser(
+        "convert-worker",
+        help="Uso interno: comprime vídeos em segundo plano",
+    )
+    sub.add_parser(
+        "upload-worker",
+        help="Uso interno: envia aulas em segundo plano",
+    )
+
     args = parser.parse_args(argv)
     if not args.cmd:
         return cmd_assistente(argparse.Namespace(recursivo=False, publicar=False, force=False))
@@ -136,6 +154,18 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_upload(args)
     if args.cmd == "resume":
         return cmd_resume(args)
+    if args.cmd == "web":
+        from aula_uploader.web.server import run_web
+
+        return run_web(port=int(args.port), open_browser=not args.no_browser)
+    if args.cmd == "convert-worker":
+        from aula_uploader.convert_worker import run_worker
+
+        return run_worker()
+    if args.cmd == "upload-worker":
+        from aula_uploader.upload_worker import run_worker
+
+        return run_worker()
     parser.print_help()
     return 1
 
@@ -183,14 +213,6 @@ def cmd_doctor() -> int:
     console.print(f"aula-uploader {__version__}")
     console.print(f"Python: {sys.version.split()[0]}")
     console.print(f"ffprobe: {'ok' if ffprobe_available() else 'ausente (opcional)'}")
-    info = detect_ollama()
-    if info.reachable:
-        console.print(f"Ollama: ok ({', '.join(info.models) or 'sem modelos'})")
-        console.print(f"Modelo sugerido: {info.recommended}")
-    elif info.installed:
-        console.print("Ollama: instalado, mas API local não responde")
-    else:
-        console.print("Ollama: não instalado (opcional)")
     console.print(
         "Credenciais: o mesmo e-mail e senha do login administrativo "
         "(via .env ou prompt na primeira execução)."

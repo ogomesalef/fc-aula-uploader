@@ -73,6 +73,13 @@ def test_parse_bunny_folder_id_from_url():
     )
 
 
+def test_parse_bunny_folder_id_aceita_id_solto():
+    assert (
+        parse_bunny_folder_id("91fb9af9-a292-413c-9b55-2c27d82affd1")
+        == "91fb9af9-a292-413c-9b55-2c27d82affd1"
+    )
+
+
 def test_parse_bunny_folder_id_rejects_non_folder_url():
     with pytest.raises(ValueError):
         parse_bunny_folder_id("https://dash.bunny.net/stream/library/123")

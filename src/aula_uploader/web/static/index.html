@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>aula-uploader</title>
+  <link rel="stylesheet" href="/static/app.css?v=73">
+</head>
+<body class="layout-new">
+  <header class="top">
+    <div>
+      <p class="eyebrow">Só neste computador · 127.0.0.1</p>
+      <h1>aula-uploader</h1>
+    </div>
+  </header>
+
+  <section class="selecao" id="selecao">
+    <div data-jump="login" data-story="portal" id="card-portal" tabindex="0">
+      <p class="kicker">Portal</p>
+      <p class="valor" id="sel-portal">—</p>
+      <p class="sub" id="sel-portal-sub"></p>
+      <div class="flyout" id="fly-portal">
+        <div class="flyout-inner">
+          <div class="portal-menu" id="portal-menu" role="menu">
+            <button type="button" role="menuitem" data-portal="fullcycle">Full Cycle</button>
+            <button type="button" role="menuitem" data-portal="devops">DevOps Pro</button>
+          </div>
+          <div id="fly-portal-body"></div>
+        </div>
+      </div>
+    </div>
+    <div data-jump="curso" data-story="produto" id="card-produto" tabindex="0">
+      <p class="kicker">Produto</p>
+      <p class="valor" id="sel-produto">Nenhum ainda</p>
+      <p class="sub" id="sel-produto-sub"></p>
+      <div class="flyout" id="fly-produto">
+        <div class="flyout-inner" id="fly-produto-body"></div>
+      </div>
+    </div>
+    <div data-jump="curso" data-story="curso" id="card-curso" tabindex="0">
+      <p class="kicker">Curso</p>
+      <p class="valor" id="sel-curso">Nenhum ainda</p>
+      <p class="sub" id="sel-curso-sub"></p>
+      <div class="flyout" id="fly-curso">
+        <div class="flyout-inner" id="fly-curso-body"></div>
+      </div>
+    </div>
+    <div data-jump="capitulo" data-story="capitulo" id="card-cap" tabindex="0">
+      <p class="kicker">Capítulo</p>
+      <p class="valor" id="sel-cap">Nenhum ainda</p>
+      <p class="sub" id="sel-cap-sub"></p>
+      <div class="flyout" id="fly-cap">
+        <div class="flyout-inner" id="fly-cap-body"></div>
+      </div>
+    </div>
+    <div data-jump="videos" data-story="videos" id="card-videos" tabindex="0">
+      <p class="kicker">Vídeos</p>
+      <p class="valor" id="sel-videos">Nenhum ainda</p>
+      <p class="sub" id="sel-videos-sub">Solte a pasta, ou acrescente mais arquivos</p>
+    </div>
+  </section>
+
+  <div id="status-strip" class="status-strip" aria-live="polite">
+    <aside class="projects-panel" aria-label="Projetos de envio">
+      <header class="projects-head">
+        <div class="projects-intro">
+          <p class="projects-kicker">Projetos</p>
+          <p class="projects-hint">Envios deste computador. Abra um anterior ou comece um novo.</p>
+        </div>
+        <button type="button" id="btn-new-upload" class="xfer-new" title="Limpa a lista e prepara outro envio neste capítulo">
+          + Novo envio
+        </button>
+      </header>
+      <div class="projects-filters" role="tablist" aria-label="Filtrar projetos">
+        <button type="button" role="tab" data-projects-filter="andamento" class="on" aria-selected="true">Em andamento</button>
+        <button type="button" role="tab" data-projects-filter="concluido" aria-selected="false">Concluídos</button>
+        <button type="button" role="tab" data-projects-filter="historico" aria-selected="false">Histórico</button>
+      </div>
+      <div id="projects-list" class="projects-list"></div>
+    </aside>
+    <div id="xfer" class="xfer idle hidden" role="button" tabindex="0" title="Progresso do upload de arquivo">
+      <div class="xfer-top">
+        <span class="xfer-spin" aria-hidden="true"></span>
+        <div class="xfer-copy">
+          <strong id="xfer-title">Envio</strong>
+          <span id="xfer-detail"></span>
+        </div>
+        <em id="xfer-pct"></em>
+      </div>
+      <div class="xfer-bar" aria-hidden="true"><i id="xfer-fill"></i></div>
+    </div>
+    <div id="convert-xfer" class="xfer convert-xfer hidden" hidden aria-hidden="true"></div>
+  </div>
+
+  <main class="layout">
+    <section class="panel step-panel on" data-view="login">
+      <div class="panel-head">
+        <h2>1. Portal</h2>
+        <div class="step-nav">
+          <button type="button" class="btn ghost invis" disabled>Voltar</button>
+          <button type="submit" form="login-form" class="btn primary" id="btn-next-curso">Entrar</button>
+        </div>
+      </div>
+      <fieldset class="block" id="box-login">
+        <legend>Qual portal</legend>
+        <div class="row" id="portal-picks">
+          <button type="button" class="btn ghost portal-btn on" data-portal="fullcycle">Full Cycle</button>
+          <button type="button" class="btn ghost portal-btn" data-portal="devops">DevOps Pro</button>
+        </div>
+        <p class="hint" id="login-hint">Cada portal tem o próprio e-mail e senha.</p>
+        <p class="status-line" id="login-status"></p>
+        <form id="login-form" class="stack login-form">
+          <label>E-mail
+            <input id="user" type="email" autocomplete="username">
+          </label>
+          <label>Senha
+            <input id="pass" type="password" autocomplete="current-password">
+          </label>
+          <label class="check"><input id="persist" type="checkbox"> Salvar sessão (opcional)</label>
+          <button type="submit" class="btn primary new-only" id="btn-login-fly">Entrar</button>
+        </form>
+        <div id="login-ok" class="ok-box hidden">
+          <p><strong id="who"></strong></p>
+          <p><a id="portal-link" target="_blank" rel="noopener">Abrir o portal</a></p>
+          <button type="button" class="btn ghost" id="btn-logout">Sair deste portal</button>
+        </div>
+      </fieldset>
+    </section>
+
+    <section class="panel step-panel" data-view="curso">
+      <div class="panel-head">
+        <h2>2. Curso</h2>
+        <div class="step-nav">
+          <button type="button" class="btn ghost" data-back="login">Voltar</button>
+          <button type="button" class="btn primary" data-next="capitulo" id="btn-next-capitulo">Continuar</button>
+        </div>
+      </div>
+      <fieldset class="block" id="box-curso">
+        <legend>Onde vão as aulas</legend>
+        <div class="produto-picks" id="produto-picks"></div>
+        <input id="curso-q" type="search" placeholder="curso, produto, ID ou link…" autocomplete="off">
+        <p class="status-line" id="curso-status"></p>
+        <ul class="pick" id="curso-list"></ul>
+      </fieldset>
+    </section>
+
+    <section class="panel step-panel" data-view="capitulo">
+      <div class="panel-head">
+        <h2>3. Capítulo</h2>
+        <div class="step-nav">
+          <button type="button" class="btn ghost" data-back="curso">Voltar</button>
+          <button type="button" class="btn primary" data-next="videos" id="btn-next-videos">Continuar</button>
+        </div>
+      </div>
+      <fieldset class="block" id="box-cap">
+        <legend>Já existe ou criar novo</legend>
+        <div class="tabs" id="cap-tabs">
+          <button type="button" class="tab on" data-tab="existente">Já existe</button>
+          <button type="button" class="tab" data-tab="novo">Criar novo</button>
+        </div>
+        <div id="tab-existente">
+          <input id="cap-q" type="search" placeholder="buscar capítulo…" autocomplete="off">
+          <p class="status-line" id="cap-status"></p>
+          <ul class="pick" id="cap-list"></ul>
+        </div>
+        <div id="tab-novo" class="stack cap-create hidden">
+          <label>Nome <input id="cap-nome" type="text" placeholder="Threat modeling"></label>
+          <label>Ordem <input id="cap-ordem" type="number" min="1" value="1"></label>
+          <label>ID no Bunny <input id="cap-bunny" type="text" placeholder="91fb9af9-a292-413c-9b55-2c27d82affd1"></label>
+          <p class="status-line" id="cap-create-status"></p>
+          <button type="button" class="btn" id="btn-cap-create">Criar capítulo</button>
+        </div>
+      </fieldset>
+    </section>
+
+    <section class="panel step-panel" data-view="videos" id="midia">
+      <div class="panel-head">
+        <h2>4. Vídeos</h2>
+        <div class="step-nav">
+          <button type="button" class="btn ghost" data-back="capitulo">Voltar</button>
+          <button type="button" class="btn primary invis" disabled>Continuar</button>
+        </div>
+      </div>
+      <div id="drop" class="drop">
+        <strong id="drop-title">Arraste a pasta ou o .zip e solte aqui</strong>
+        <span id="drop-hint">Arraste a pasta ou o .zip e solte aqui. Ou cole o caminho da pasta abaixo.</span>
+        <div class="row">
+          <button type="button" class="btn" id="btn-folder">Escolher pasta</button>
+          <button type="button" class="btn ghost" id="btn-files">Escolher arquivos</button>
+        </div>
+        <input id="file-input" type="file" multiple accept="video/*,.mp4,.mov,.mkv,.webm,.m4v,.avi,.zip" hidden>
+        <label class="path-lab"><span id="path-lab">Caminho da pasta</span>
+          <span class="row">
+            <input id="local-path" type="text" placeholder="/Users/…/aulas">
+            <button type="button" class="btn ghost" id="btn-path">Abrir</button>
+          </span>
+        </label>
+      </div>
+      <div id="grande-warn" class="big-warn hidden">
+        <div>
+          <strong id="grande-warn-title"></strong>
+          <span id="grande-warn-sub"></span>
+        </div>
+        <div class="row">
+          <button type="button" class="btn primary" id="btn-convert-all">Comprimir agora</button>
+        </div>
+      </div>
+      <div id="lista-head" class="lista-head hidden">
+        <p id="fonte" class="hint"></p>
+        <div class="row">
+          <button type="button" class="btn ghost" id="btn-add-more">Adicionar mais arquivos</button>
+          <button type="button" class="btn ghost" id="btn-add-folder">Adicionar pasta</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="aulas-table">
+          <colgroup>
+            <col data-col="ordem">
+            <col data-col="arquivo">
+            <col data-col="titulo">
+            <col data-col="tamanho">
+            <col data-col="formato">
+            <col data-col="resolucao">
+            <col data-col="acao">
+            <col data-col="status">
+            <col data-col="remove">
+          </colgroup>
+          <thead>
+            <tr>
+              <th data-col="ordem">#</th>
+              <th data-col="arquivo">Arquivo</th>
+              <th data-col="titulo">Título no portal</th>
+              <th data-col="tamanho">Tamanho</th>
+              <th data-col="formato">Formato</th>
+              <th data-col="resolucao">Resolução</th>
+              <th data-col="acao">Ação</th>
+              <th data-col="status">Status</th>
+              <th data-col="remove"></th>
+            </tr>
+          </thead>
+          <tbody id="aulas"></tbody>
+        </table>
+      </div>
+      <p id="dup-warn" class="warn hidden"></p>
+      <div class="send-bar">
+        <label class="check"><input id="publicar" type="checkbox" checked> Publicar agora (senão vai como rascunho)</label>
+        <label class="check"><input id="force" type="checkbox"> Reenviar mesmo se já tiver vídeo</label>
+        <button type="button" class="btn primary" id="btn-send" disabled>Enviar aulas</button>
+      </div>
+    </section>
+
+    <section class="log-panel">
+      <div class="log-head">
+        <h2>O que está acontecendo</h2>
+        <p id="job-sum" class="hint">Nada enviado ainda.</p>
+      </div>
+      <ol id="log" class="log"></ol>
+    </section>
+  </main>
+
+  <div id="modal-atribuir" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-modal-close="1"></div>
+    <div class="modal-card">
+      <h3 id="modal-atribuir-title">Atribuir cursos?</h3>
+      <p id="modal-atribuir-body" class="hint"></p>
+      <div id="modal-atribuir-prods" class="modal-prods"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="modal-atribuir-cancel">Cancelar</button>
+        <button type="button" class="btn primary" id="modal-atribuir-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-aviso" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-aviso-close="1"></div>
+    <div class="modal-card">
+      <h3 id="modal-aviso-title">Aviso</h3>
+      <p id="modal-aviso-body" class="hint"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost hidden" id="modal-aviso-cancel">Cancelar</button>
+        <button type="button" class="btn primary" id="modal-aviso-ok">Entendi</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-preview" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-backdrop" data-preview-close="1"></div>
+    <div class="modal-card modal-wide">
+      <h3 id="modal-preview-title">Conferir o vídeo</h3>
+      <p id="modal-preview-body" class="hint"></p>
+      <video id="preview-player" class="preview-player" controls preload="metadata"></video>
+      <div class="preview-cmp" id="preview-cmp"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="btn-preview-keep">Manter o original</button>
+        <button type="button" class="btn primary" id="btn-preview-use">Usar o convertido</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=79"></script>
+</body>
+</html>

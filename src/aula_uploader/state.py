@@ -5,10 +5,15 @@ from __future__ import annotations
 import json
 import os
 import time
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from aula_uploader.session import state_dir
+
+
+def _norm_nome(nome: str) -> str:
+    return unicodedata.normalize("NFC", Path(nome).name)
 
 
 @dataclass
@@ -16,7 +21,7 @@ class ItemState:
     arquivo: str
     ordem: int
     titulo: str
-    status: str = "pending"  # pending | done | skipped | failed
+    status: str = "pending"  # pending | done | skipped | failed | processing
     conteudo_id: int | None = None
     erro: str = ""
 
@@ -87,11 +92,62 @@ class UploadState:
             items=items,
         )
 
-    def mark(self, arquivo: str, status: str, *, conteudo_id: int | None = None, erro: str = "") -> None:
+    def find_item(self, arquivo: str) -> ItemState | None:
+        alvo = _norm_nome(arquivo)
         for item in self.items:
-            if item.arquivo == arquivo:
-                item.status = status
+            if _norm_nome(item.arquivo) == alvo:
+                return item
+        return None
+
+    def mark(
+        self,
+        arquivo: str,
+        status: str,
+        *,
+        conteudo_id: int | None = None,
+        erro: str = "",
+    ) -> None:
+        item = self.find_item(arquivo)
+        if item is None:
+            item = ItemState(
+                arquivo=Path(arquivo).name,
+                ordem=len(self.items) + 1,
+                titulo=Path(arquivo).stem,
+                status=status,
+                conteudo_id=conteudo_id,
+                erro=erro,
+            )
+            self.items.append(item)
+        else:
+            item.status = status
+            if conteudo_id is not None:
                 item.conteudo_id = conteudo_id
-                item.erro = erro
-                break
+            item.erro = erro
         self.save()
+
+    def ensure_plano(self, plano: list) -> None:
+        """Garante que cada aula do plano atual existe no estado (não apaga as antigas)."""
+        from aula_uploader.plan import Acao, PlanoItem
+
+        mudou = False
+        for item in plano:
+            if not isinstance(item, PlanoItem):
+                continue
+            nome = item.aula.path.name
+            existing = self.find_item(nome)
+            if existing is None:
+                self.items.append(
+                    ItemState(
+                        arquivo=nome,
+                        ordem=item.aula.ordem,
+                        titulo=item.aula.titulo,
+                        status="skipped" if item.acao == Acao.PULAR else "pending",
+                        conteudo_id=item.existente_id,
+                    )
+                )
+                mudou = True
+            elif item.existente_id and not existing.conteudo_id:
+                existing.conteudo_id = int(item.existente_id)
+                mudou = True
+        if mudou:
+            self.save()

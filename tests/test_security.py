@@ -1,5 +1,6 @@
 """Testes das defesas: zip slip, redirects e persistência de cookies."""
 
+import json
 import stat
 import zipfile
 from pathlib import Path
@@ -8,7 +9,6 @@ import httpx
 import pytest
 
 from aula_uploader.media import cleanup_temp, resolve_source
-from aula_uploader.ollama_client import _api_url
 from aula_uploader.portal_client import PortalClient
 
 BASE = "https://portal.fullcycle.com.br"
@@ -76,6 +76,19 @@ def test_redirect_para_outro_host_e_bloqueado(httpx_mock, portal):
         portal.inspect_curso(291)
 
 
+def test_redirect_http_no_mesmo_host_sobe_para_https(httpx_mock, portal):
+    httpx_mock.add_response(
+        url=f"{BASE}/admin/curso/291/edit",
+        status_code=302,
+        headers={"location": "http://portal.fullcycle.com.br/admin/curso/291/edit/final"},
+    )
+    httpx_mock.add_response(
+        url=f"{BASE}/admin/curso/291/edit/final",
+        text='<input name="son_cursosbundle_cursotype[nome]" value="Curso X" />',
+    )
+    assert portal.inspect_curso(291).nome == "Curso X"
+
+
 def test_redirect_no_mesmo_host_e_seguido(httpx_mock, portal):
     httpx_mock.add_response(
         url=f"{BASE}/admin/curso/291/edit",
@@ -103,6 +116,16 @@ def test_save_session_grava_somente_cookies_de_sessao(portal):
     assert "PHPSESSID" in gravados
     assert "_ga" not in gravados
     assert "evil.example" not in gravados
+
+
+def test_session_file_grava_username(portal):
+    portal.client.cookies.set(
+        "PHPSESSID", "abc123", domain="portal.fullcycle.com.br", path="/"
+    )
+    portal.save_session()
+    dados = json.loads(portal.session_path.read_text(encoding="utf-8"))
+    assert dados["username"] == "user@example.com"
+    assert dados["cookies"][0]["name"] == "PHPSESSID"
 
 
 def test_session_file_tem_permissao_restrita(portal):
@@ -146,21 +169,6 @@ def test_is_authenticated_recusa_redirect_externo(httpx_mock, portal):
         headers={"location": "https://evil.example/admin"},
     )
     assert portal.is_authenticated() is False
-
-
-@pytest.mark.parametrize(
-    "host",
-    ["file:///etc/passwd", "ftp://127.0.0.1", "127.0.0.1:11434", ""],
-)
-def test_api_url_do_ollama_recusa_esquemas_perigosos(host):
-    with pytest.raises(ValueError):
-        _api_url(host, "/api/tags")
-
-
-def test_api_url_do_ollama_aceita_http_local():
-    assert _api_url("http://127.0.0.1:11434/", "/api/tags") == (
-        "http://127.0.0.1:11434/api/tags"
-    )
 
 
 @pytest.mark.httpx_mock(assert_all_responses_were_requested=False)

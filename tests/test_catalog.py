@@ -2,7 +2,7 @@ import json
 import stat
 import threading
 
-from aula_uploader.catalog import CatalogStore, matches_search
+from aula_uploader.catalog import CatalogStore, course_matches, matches_search
 from aula_uploader.portal_client import CapituloInfo, CapituloResumo, CursoInfo
 
 
@@ -118,14 +118,46 @@ def test_courses_are_sorted_alphabetically(tmp_path):
 def test_seed_preenche_catalogo_padrao_sem_arquivo(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     catalog = CatalogStore()
-    nomes = [c.nome for c in catalog.courses()]
-    assert nomes == [
-        "Arquitetura na Era da IA",
-        "Protocolos de Comunicação",
-    ]
     assert catalog.get_course(291) is not None
     assert len(catalog.get_course(291).chapters) == 9
     assert catalog.get_course(296) is not None
+    assert set(catalog.get_course(291).produto_ids) == {"mba-eng-ia", "curso-full-cycle"}
+    assert set(catalog.get_course(292).produto_ids) == {"mba-arq", "curso-full-cycle"}
+    assert "mba-eng-ia" in catalog.get_course(200).produto_ids
+    assert "mba-arq" in catalog.get_course(200).produto_ids
+    nomes = {product.nome for product in catalog.products()}
+    assert "MBA em Engenharia de Software com IA" in nomes
+    assert "Pós-Graduação AIOps e IA na Engenharia de Cloud" in nomes
+    assert "Pós-Graduação em Liderança Técnica" in nomes
+    assert "Pós-Graduação GoExpert" in nomes
+    curtos = {product.id: product for product in catalog.products()}
+    assert curtos["mba-eng-ia"].nome_curto == "MBA Eng IA"
+    assert curtos["mba-arq"].nome_curto == "MBA Arq FC"
+    assert curtos["pos-techlead"].portal == "fullcycle"
+    assert curtos["pos-aiops"].nome_curto == "Pós IAOps"
+    assert curtos["pos-aiops"].portal == "devops"
+    products = catalog.products()
+    assert [p.id for p in products[:4]] == [
+        "mba-eng-ia",
+        "mba-arq",
+        "pos-techlead",
+        "pos-go",
+    ]
+    assert "curso-full-cycle" in [p.id for p in products]
+    assert "curso-goexpert" in [p.id for p in products]
+    assert "pos-aiops" in [p.id for p in products]
+    assert "pos-aiops" in catalog.get_course(263).produto_ids
+    assert "pos-aiops" in catalog.get_course(200).produto_ids
+    assert course_matches(
+        catalog.get_course(291),
+        "MBA Engenharia",
+        catalog.products_map(),
+    )
+    assert not course_matches(
+        catalog.get_course(177),
+        "MBA Engenharia",
+        catalog.products_map(),
+    )
 
 
 def test_seed_nao_sobrescreve_curso_ja_mapeado(tmp_path, monkeypatch):
@@ -140,6 +172,7 @@ def test_seed_nao_sobrescreve_curso_ja_mapeado(tmp_path, monkeypatch):
     catalog = CatalogStore()  # path padrão = config_dir/catalog.json
     assert catalog.get_course(291).nome == "Nome local"
     assert [c.nome for c in catalog.get_course(291).chapters] == ["Só o meu"]
+    assert "mba-eng-ia" in catalog.get_course(291).produto_ids
     # O outro curso do seed continua disponível.
     assert catalog.get_course(296) is not None
 
@@ -212,3 +245,18 @@ def test_remember_after_upload_so_grava_se_subiu_aula(tmp_path):
     assert course is not None
     assert course.nome == "Curso Novo"
     assert course.chapters[0].id == 10
+
+
+def test_assign_preserva_vinculo_depois_de_upsert(tmp_path):
+    catalog = CatalogStore(tmp_path / "catalog.json")
+    product = catalog.ensure_product("MBA em Engenharia de Software com IA")
+    catalog.assign_product(291, product.id, nome="Arquitetura na Era da IA")
+    catalog.upsert_course(
+        CursoInfo(id=291, nome="Arquitetura na Era da IA"),
+        [CapituloInfo(id=1, nome="Introdução", ordem=1, curso_id=291)],
+    )
+    restored = CatalogStore(tmp_path / "catalog.json").get_course(291)
+    assert restored is not None
+    assert product.id in restored.produto_ids
+    catalog.unassign_product(291, product.id)
+    assert catalog.get_course(291).produto_ids == []

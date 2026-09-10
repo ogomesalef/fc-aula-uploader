@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import getpass
+import json
 import os
 import stat
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
@@ -138,6 +140,19 @@ def get_credentials(portal_key: str) -> tuple[str, str, str]:
     return base, user, password
 
 
+def _exigir_terminal(o_que: str) -> None:
+    """Falha rápido em vez de travar num prompt que ninguém pode responder.
+
+    Workers destacados e tarefas agendadas rodam sem TTY; ali um ``input()``
+    fica bloqueado para sempre e o envio parece parado em 0%.
+    """
+    if not (sys.stdin and sys.stdin.isatty()):
+        raise RuntimeError(
+            f"Preciso do {o_que} do portal, mas não há terminal para perguntar. "
+            "Faça login na interface web para gravar a sessão e tente de novo."
+        )
+
+
 def prompt_credentials_if_needed(
     portal_key: str,
     *,
@@ -158,14 +173,19 @@ def prompt_credentials_if_needed(
         env_pass = ""
     user = username or env_user
     pwd = password or env_pass
-    if not user:
+    # Com sessão salva os cookies bastam: não pedimos usuário nem senha.
+    # Sem essa guarda o worker destacado (sem TTY) congela no input() para sempre.
+    credencial_opcional = allow_empty_password
+    if not user and not credencial_opcional:
+        _exigir_terminal("usuário")
         user = input(
             f"Usuário do portal {PORTAL_LABELS[portal_key]} "
             "(mesmo do login administrativo): "
         ).strip()
-    if not pwd and not allow_empty_password:
+    if not pwd and not credencial_opcional:
+        _exigir_terminal("senha")
         pwd = getpass.getpass("Senha (não será exibida): ")
-    if not user:
+    if not user and not credencial_opcional:
         raise RuntimeError("Usuário é obrigatório.")
     if not pwd and not allow_empty_password:
         raise RuntimeError("Senha é obrigatória.")
@@ -175,6 +195,49 @@ def prompt_credentials_if_needed(
 def has_saved_session(portal_key: str) -> bool:
     path = session_path(portal_key)
     return path.exists() and path.stat().st_size > 0
+
+
+def session_username(portal_key: str) -> str:
+    """Usuário gravado junto dos cookies (sem senha)."""
+    path = session_path(portal_key)
+    if not path.is_file():
+        return ""
+    try:
+        dados = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if isinstance(dados, dict):
+        return str(dados.get("username") or "").strip()
+    return ""
+
+
+def last_portal_path() -> Path:
+    return config_dir() / "last-portal"
+
+
+def remember_last_portal(portal_key: str) -> None:
+    path = last_portal_path()
+    path.write_text(portal_key.strip() + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def read_last_portal() -> str | None:
+    path = last_portal_path()
+    if not path.is_file():
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        return resolve_portal_key(raw)
+    except ValueError:
+        return None
 
 
 def build_client(

@@ -1,121 +1,126 @@
 # aula-uploader
 
-CLI interativa para **criar capítulos**, **normalizar nomes de aulas** e **enviar vídeos** a um portal administrativo.
+Ferramenta local para **criar capítulos**, **organizar vídeos** e **enviar aulas** aos portais Full Cycle e DevOps Pro.
+
+O jeito recomendado de usar é a **interface web** (`aula-uploader web`): roda só neste computador (`127.0.0.1`), com login, escolha de curso/capítulo, compressão de vídeos grandes e acompanhamento do envio.
 
 A pasta de vídeo no Bunny precisa existir antes. O capítulo pode ser criado pela ferramenta ou reutilizado se já estiver no curso.
 
 ## Requisitos
 
+- macOS (testado) ou Linux
 - Python 3.10+ (recomendado 3.12)
-- Usuário e senha de admin do portal
-- Opcional: `ffprobe` (duração dos vídeos) e [Ollama](https://ollama.com) (sugestão local de títulos)
+- Usuário e senha de **admin** do portal
+- `ffmpeg` e `ffprobe` (`brew install ffmpeg`)
+- Opcional: Go 1.22+ — compressão em paralelo; sem Go, usa ffmpeg um arquivo por vez
 
-## Instalação
+## Instalação rápida
 
 ```bash
 git clone https://github.com/ogomesalef/fc-aula-uploader.git
 cd fc-aula-uploader
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e .
+brew install ffmpeg   # se ainda não tiver
 ```
 
-## Primeira execução
+Checagem:
 
 ```bash
-aula-uploader
+aula-uploader doctor
 ```
 
-Na primeira vez o assistente pede:
-
-1. Qual portal usar
-2. E-mail (usuário do admin)
-3. Senha (não é exibida)
-
-Você pode copiar `.env.example` para `.env` com usuário e senha. O assistente **não** faz login silencioso: pergunta se quer digitar agora ou usar o `.env`.
-
-Salvar a sessão é opcional e o padrão é **não salvar**. Se você aceitar, ela fica só nesta máquina (`~/.config/aula-uploader/`). Para apagar:
+## Subir a interface (uso do dia a dia)
 
 ```bash
-aula-uploader logout
+aula-uploader web
 ```
 
-Ao abrir o assistente (e no `doctor`), se o GitHub estiver à frente do clone, aparece um aviso. Não precisa avisar ninguém: a pessoa atualiza com:
+Abre **http://127.0.0.1:8787/**
+
+Só aceita acesso local. Se a aba não abrir sozinha:
 
 ```bash
-git pull && pip install -e .
+aula-uploader web --no-browser
+# depois abra http://127.0.0.1:8787/ no navegador
 ```
 
-A checagem usa a rede uma vez a cada algumas horas e falha em silêncio se estiver offline.
+### Fluxo na web
 
-## O que o assistente faz
+1. **Portal** — Full Cycle ou DevOps Pro → login (marque *Salvar sessão* se quiser manter neste Mac)
+2. **Produto / curso / capítulo** — filtre, busque ou crie capítulo (nome, ordem, URL da pasta Bunny)
+3. **Vídeos** — arraste pasta, `.zip` ou arquivos; ajuste ordem e título
+4. **Comprimir** (se precisar) — vídeos grandes demais para o portal
+5. **Enviar** — acompanhe o status de cada aula
 
-1. **Portal e login**
-2. **Destino**
-   - criar um capítulo (nome, ordem, URL da pasta Bunny) — o curso pode ser escolhido na lista mapeada ou buscado por trecho do nome no portal
-   - usar um capítulo existente (link da lista de aulas)
-   - usar um capítulo já mapeado (lista com setas; digite para filtrar por trecho do nome, com ou sem acento). Já vêm *Arquitetura na Era da IA* e *Protocolos de Comunicação*. Um curso novo só entra nesta lista depois que você sobe uma aula nele
-   - **lote:** vários capítulos de uma vez
-3. **Vídeos** — pasta ou `.zip` (o original não é alterado)
-4. **Nomes** — normalização local, Ollama ou edição manual; sempre dá para revisar
-5. **Plano** — criar, enviar vídeo ou pular (aula já existe com vídeo); títulos repetidos no lote viram aviso antes do envio
-6. **Upload** — progresso por aula; no fim, link do admin para conferir e menu para enviar mais ou encerrar
+### Status do envio (o que cada etapa significa)
 
-Aulas novas nascem como **rascunho**, salvo se você escolher publicar.
+| Status na tela | O que está acontecendo |
+|----------------|------------------------|
+| **enviando** | Arquivo subindo (chunks → S3) |
+| **salvando no portal** | URL sendo gravada no conteúdo do admin |
+| **no Nivo** | Encode no Nivo; aguardando o link da aula |
+| **pronta** | Link ok — aula utilizável no portal |
 
-### Lote (vários capítulos)
+Salvar a URL S3 no conteúdo **já dispara** o Nivo. Não é um upload separado.
 
-1. Confirme o curso
-2. Monte a lista: nome, ordem e URL Bunny de cada capítulo (Bunny não pode se repetir)
-3. Revise
-4. Capítulos com o **mesmo nome** no curso não são recriados — só entram os vídeos que ainda não estão lá (a Bunny digitada não é aplicada nesse caso, e a ferramenta avisa)
-5. Vincule **à mão** a pasta/ZIP de cada capítulo
-6. Revise nomes por capítulo
-7. Uma escolha publicar/rascunho vale para o lote; o envio segue um capítulo por vez
+Enquanto só o Nivo processa, dá para preparar outro envio / outro capítulo. O progresso fica na faixa **Projetos** (Em andamento · Concluídos · Histórico).
 
-## Formato dos vídeos
+Detalhes da web: [docs/WEB.md](docs/WEB.md).
+
+## Vídeos grandes
+
+| Limite | Valor |
+|--------|-------|
+| Alvo | 1,00 GB |
+| Teto (portal recusa) | 1,15 GB |
+
+- Acima de 1 GB: aviso + botão **Comprimir**
+- Acima do teto: **Enviar** só libera depois de comprimir
+- Compressão em 1080p (reduz 4K/1440p; não amplia 720p)
+- Roda em segundo plano; se a interface cair, o worker continua
+
+O conversor fica em `tools/videopack` (Go + ffmpeg) e compila na primeira vez em `~/.cache/aula-uploader/`.
+
+## Formato dos arquivos
 
 Extensões: `.mp4`, `.mov`, `.mkv`, `.avi`, `.m4v`, `.webm`.
 
-O nome do arquivo sugere ordem e título (você confirma depois):
+O nome do arquivo sugere ordem e título (você confirma na tela):
 
 | Arquivo | Ordem | Título |
 |---------|-------|--------|
 | `9-segurança.mp4` | 9 | Segurança |
 | `01 - Introdução.mp4` | 1 | Introdução |
-| `9.1-O problema de segurança.mp4` | 1 | O Problema de Segurança |
 
-Links úteis no admin:
+Aulas novas nascem como **rascunho**, salvo se marcar *Publicar agora*.
 
-- Curso (lista de capítulos): `.../admin/curso/capitulo/<ID>/curso`
-- Capítulo (lista de aulas): `.../admin/curso/conteudo/<ID>/capitulo`
-
-## Outros comandos
+## Atualizar
 
 ```bash
-aula-uploader doctor
-aula-uploader assistente
-aula-uploader plan --portal 1 --capitulo 299 --fonte ./videos
-aula-uploader upload --portal 1 --capitulo 299 --fonte ./aulas.zip --use-env
-aula-uploader resume --portal 1 --capitulo 299 --use-env
+cd fc-aula-uploader
+git pull
+source .venv/bin/activate
+pip install -e .
 ```
 
-Sem subcomando, abre o assistente. Em `--portal` valem `1`/`2` ou os slugs (`fullcycle`, `devops`); `aula-uploader --help` mostra o mapeamento.
+## Assistente no terminal (opcional)
 
-Por padrão esses comandos **pedem usuário e senha no terminal**, mesmo com `.env` presente. Passe `--use-env` para autorizar o login a partir do `.env` — útil em script, explícito no histórico.
+```bash
+aula-uploader              # ou: aula-uploader assistente
+aula-uploader logout       # apaga sessões salvas neste Mac
+aula-uploader resume --portal fullcycle --capitulo 299
+```
 
-`resume` retoma o que ficou pendente ou falhou. Se a origem era um `.zip`, ele reabre o arquivo original — o diretório temporário da execução anterior não é necessário.
+Credenciais opcionais em `.env` (copie de `.env.example`). Não faça commit do `.env`.
 
 ## Segurança
 
-- Credenciais e cookies **não** vão para o Git. Não faça commit de `.env`.
-- Logs mascaram URLs assinadas e possíveis Access Keys.
-- Só os hosts oficiais do portal são aceitos, sempre por HTTPS.
-- Redirects para fora do host do portal são bloqueados, então o cookie de sessão nunca sai dele.
-- ZIPs são extraídos com verificação de caminho (`zip slip`) e recusam entradas de symlink.
-- Confirmação antes de enviar (exceto `--yes` na CLI).
-
-Detalhes em [SECURITY.md](SECURITY.md).
+- Credenciais e cookies **não** vão para o Git
+- Interface web só em `127.0.0.1`
+- Só hosts oficiais do portal, sempre HTTPS
+- Detalhes em [SECURITY.md](SECURITY.md)
 
 ## Desenvolvimento
 
@@ -123,7 +128,7 @@ Detalhes em [SECURITY.md](SECURITY.md).
 pip install -e ".[dev]"
 ruff check .
 pytest -q
-python scripts/secret_scan.py
+(cd tools/videopack && go test ./...)
 ```
 
 ## Licença
