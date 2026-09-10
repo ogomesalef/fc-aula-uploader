@@ -1,6 +1,6 @@
 # aula-uploader
 
-Ferramenta local para criar capítulos, organizar vídeos e enviar aulas aos portais Full Cycle e DevOps Pro.
+Ferramenta local para criar capítulos, organizar vídeos e enviar aulas ao portal.
 
 A interface web (`aula-uploader web`) roda só neste computador (`127.0.0.1`). A pasta de vídeo no Bunny precisa existir antes; o capítulo pode ser criado ou reutilizado.
 
