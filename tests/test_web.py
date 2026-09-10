@@ -2,9 +2,9 @@ import json
 import re
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
-from pathlib import Path
 from fastapi.testclient import TestClient
 
 from aula_uploader.catalog import CatalogStore
@@ -352,14 +352,6 @@ def test_login_sem_senha_pede_credencial_do_portal(tmp_path):
     assert "e-mail" in response.json()["detail"].casefold()
 
 
-def test_login_sem_senha_pede_credencial_do_portal(tmp_path):
-    client, _state = _client(tmp_path)
-    client.get("/?k=test-token")
-    response = client.post("/api/login", json={"portal": "devops", "persist": False})
-    assert response.status_code == 400
-    assert "e-mail" in response.json()["detail"].casefold()
-
-
 class _DummyPortal:
     def __init__(self, url):
         self.base_url = url
@@ -516,8 +508,8 @@ def test_upload_recusa_video_acima_do_teto(tmp_path):
 
 
 def test_convert_dispara_e_publica_progresso(tmp_path, monkeypatch):
-    from aula_uploader.videopack import AVISO_BYTES
     from aula_uploader.convert_worker import aplicar_evento, save_job
+    from aula_uploader.videopack import AVISO_BYTES
 
     client, state = _client(tmp_path)
     client.get("/?k=test-token")
@@ -831,13 +823,12 @@ console.log(JSON.stringify(casos.map((c) => jobPctGeral(c))));
 
 
 # ---------------------------------------------------------------------------
-# Envio com falha fica em "Em andamento", com marca vermelha — some da fila
-# só quando a pessoa arquiva.
+# Envio com falha vai para "Concluídos" (fora da fila ativa), com marca vermelha.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node não instalado")
-def test_cliente_manda_job_com_falha_para_andamento():
+def test_cliente_manda_job_com_falha_para_concluido():
     js = (STATIC / "app.js").read_text(encoding="utf-8")
     fonte = "".join(
         _corpo_da_funcao(js, nome) + "\n}\n"
@@ -864,9 +855,8 @@ console.log(JSON.stringify(out));
     )
     assert json.loads(saida.stdout) == {
         "tudoOk": "concluido",
-        # mesmo com o servidor dizendo "concluido", falha volta para a fila
-        "umaFalhou": "andamento",
-        "jobParou": "andamento",
+        "umaFalhou": "concluido",
+        "jobParou": "concluido",
         "cancelado": "concluido",
         "arquivado": "historico",
     }
@@ -940,8 +930,9 @@ def test_barrinha_acompanha_ate_ficar_pronta():
         trecho = corpo[corpo.index(f'status === "{fase}"') :][:600]
         assert "conv-bar" in trecho, f"fase {fase} ficou sem barra de carregando"
     # e cada fase se explica em palavras
-    assert "finalizando no portal" in corpo
-    assert "vídeo enviado, convertendo" in corpo
+    assert "salvando no portal" in corpo
+    assert "no Nivo" in corpo
+    assert "aguardando o link da aula" in corpo
 
 
 def test_colunas_curtas_ficam_centralizadas():

@@ -1,4 +1,4 @@
-"""Baldes dos projetos: envio com falha continua sendo trabalho pendente."""
+"""Baldes dos projetos: falha/cancelamento saem da fila ativa."""
 
 import pytest
 
@@ -46,9 +46,9 @@ def test_job_vazio_nao_e_falha():
         (_job(), "concluido"),
         (
             _job(status="done_with_errors", items=[{"status": "ok"}, {"status": "falhou"}]),
-            "andamento",
+            "concluido",
         ),
-        (_job(status="error", items=[{"status": "pendente"}]), "andamento"),
+        (_job(status="error", items=[{"status": "pendente"}]), "concluido"),
         (_job(status="cancelado"), "concluido"),
         (_job(status="running", items=[{"status": "enviando"}]), "andamento"),
     ],
@@ -63,8 +63,8 @@ def test_arquivar_vence_a_falha():
     assert job_bucket(job) == "historico"
 
 
-def test_falha_nao_muda_a_fase():
-    """A fase segue descrevendo o estado; só o balde muda."""
+def test_falha_vai_para_concluido():
+    """Falha/erro saem da fila ativa; a fase continua descrevendo o estado."""
     job = _job(status="error", items=[{"status": "falhou"}])
     assert job_fase(job) == "error"
-    assert job_bucket(job) == "andamento"
+    assert job_bucket(job) == "concluido"

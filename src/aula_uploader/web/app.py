@@ -30,6 +30,23 @@ from pydantic import BaseModel, Field
 
 from aula_uploader import __version__
 from aula_uploader.catalog import CatalogCourse, CatalogProduct, CatalogStore, course_matches
+from aula_uploader.convert_worker import (
+    load_job as load_convert_job,
+)
+from aula_uploader.convert_worker import (
+    marcar_interrupcao,
+    novo_job,
+    worker_vivo,
+)
+from aula_uploader.convert_worker import (
+    request_cancel as cancel_convert_worker,
+)
+from aula_uploader.convert_worker import (
+    save_job as save_convert_job,
+)
+from aula_uploader.convert_worker import (
+    start_detached as start_convert_worker,
+)
 from aula_uploader.media import (
     cleanup_temp,
     format_bytes,
@@ -65,37 +82,49 @@ from aula_uploader.session import (
     session_path,
     session_username,
 )
-from aula_uploader.convert_worker import (
-    load_job as load_convert_job,
-    marcar_interrupcao,
-    novo_job,
-    request_cancel as cancel_convert_worker,
-    save_job as save_convert_job,
-    start_detached as start_convert_worker,
-    worker_vivo,
-)
 from aula_uploader.state import UploadState
+from aula_uploader.tui import capitulo_admin_url, conteudo_admin_url, curso_admin_url
 from aula_uploader.upload_jobs import (
     archive_job as archive_upload_job,
+)
+from aula_uploader.upload_jobs import (
     delete_job as delete_upload_job,
+)
+from aula_uploader.upload_jobs import (
     get_job as get_upload_job_by_id,
+)
+from aula_uploader.upload_jobs import (
     job_fase,
-    list_jobs as list_upload_jobs,
     pode_iniciar_upload,
-    unarchive_job as unarchive_upload_job,
     upsert_job,
+)
+from aula_uploader.upload_jobs import (
+    list_jobs as list_upload_jobs,
+)
+from aula_uploader.upload_jobs import (
+    unarchive_job as unarchive_upload_job,
 )
 from aula_uploader.upload_worker import (
     load_job as load_upload_job,
+)
+from aula_uploader.upload_worker import (
     marcar_interrupcao as marcar_upload_interrupcao,
+)
+from aula_uploader.upload_worker import (
     novo_job as novo_upload_job,
-    request_cancel as cancel_upload_worker,
+)
+from aula_uploader.upload_worker import (
     save_job as save_upload_job,
+)
+from aula_uploader.upload_worker import (
     start_detached as start_upload_worker,
+)
+from aula_uploader.upload_worker import (
     web_job_view,
+)
+from aula_uploader.upload_worker import (
     worker_vivo as upload_worker_vivo,
 )
-from aula_uploader.tui import capitulo_admin_url, conteudo_admin_url, curso_admin_url
 from aula_uploader.videopack import (
     ALVO_BYTES,
     AVISO_BYTES,
@@ -2468,7 +2497,7 @@ def _hydrate_job_from_disk(state: WebState) -> None:
         state.uploading = False
         try:
             upsert_job(dict(vivo))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110
             pass
     if not state.portal_key:
         return
@@ -2486,7 +2515,7 @@ def _hydrate_job_from_disk(state: WebState) -> None:
         state.job = from_state
     try:
         upsert_job(dict(state.job))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
     # Remonta vídeos só quando a lista está vazia e o job é deste capítulo.
     if state.aulas:
@@ -2590,7 +2619,7 @@ def _refresh_nivo_status(state: WebState) -> bool:
             state.uploading = False
             try:
                 upsert_job(dict(vivo))
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
             depois = json.dumps(state.job or {}, sort_keys=True, ensure_ascii=False)
             if antes != depois:
@@ -2614,7 +2643,7 @@ def _refresh_nivo_status(state: WebState) -> bool:
                 state.job = novo
             try:
                 upsert_job(dict(state.job))
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
             depois = json.dumps(state.job or {}, sort_keys=True, ensure_ascii=False)
             if antes != depois:
@@ -2644,7 +2673,7 @@ def _refresh_nivo_status(state: WebState) -> bool:
     state.job = _job_from_upload_state(st, state=state)
     try:
         upsert_job(dict(state.job))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
     by_name = {i.arquivo: i for i in st.items}
     for row in (state.job.get("items") or []):
@@ -2683,7 +2712,7 @@ def _ensure_nivo_watcher(state: WebState) -> None:
                     # Sem pendência: dorme mais e só reavalia hydrate.
                     time.sleep(20.0)
                     continue
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
             time.sleep(15.0)
 
@@ -2740,7 +2769,7 @@ def _watch_upload_job(state: WebState) -> None:
             # Espelha logs novos do worker no painel da interface.
             for entry in job.get("logs") or []:
                 msg = entry.get("message") or ""
-                if msg and not any(l.message == msg for l in list(state.logs)[-20:]):
+                if msg and not any(log.message == msg for log in list(state.logs)[-20:]):
                     state.emit(msg, level="info")
             state.publish(
                 {"type": "job", "job": state.job, "uploading": state.uploading}

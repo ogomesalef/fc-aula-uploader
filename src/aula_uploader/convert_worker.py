@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -79,8 +80,9 @@ def pid_is_worker(pid: int) -> bool:
     except OSError:
         return False
     try:
+        ps = shutil.which("ps") or "/bin/ps"
         out = subprocess.check_output(  # noqa: S603
-            ["ps", "-p", str(pid), "-o", "command="],
+            [ps, "-p", str(pid), "-o", "command="],
             text=True,
             timeout=2,
         )

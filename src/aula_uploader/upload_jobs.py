@@ -68,18 +68,18 @@ def job_fase(job: dict[str, Any]) -> str:
 
 
 def job_tem_falha(job: dict[str, Any]) -> bool:
-    """True quando o envio parou no meio ou alguma aula falhou.
-
-    Envio com falha continua sendo trabalho pendente: fica em "andamento"
-    para a pessoa retomar, em vez de sumir como se tivesse dado certo.
-    """
+    """True quando o envio parou no meio ou alguma aula falhou."""
     if any((i.get("status") == "falhou") for i in job.get("items") or []):
         return True
     return str(job.get("status") or "") in {"error", "done_with_errors"}
 
 
 def job_bucket(job: dict[str, Any]) -> str:
-    """andamento | concluido | historico."""
+    """andamento | concluido | historico.
+
+    Falha/cancelamento vão para concluído (fora da fila ativa), para não
+    misturar com o envio que está rodando agora. Arquivado → histórico.
+    """
     if job.get("archived"):
         return "historico"
     status = str(job.get("status") or "")

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -24,6 +25,25 @@ from aula_uploader.runner import build_state, executar_plano
 from aula_uploader.session import ensure_authenticated, has_saved_session
 from aula_uploader.state import UploadState
 from aula_uploader.videopack import cache_dir
+
+
+def pid_is_worker(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:
+        ps = shutil.which("ps") or "/bin/ps"
+        out = subprocess.check_output(  # noqa: S603
+            [ps, "-p", str(pid), "-o", "command="],
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return "upload-worker" in out.casefold()
 
 JOB_NAME = "upload-job.json"
 PID_NAME = "upload-worker.pid"
@@ -74,24 +94,6 @@ def save_job(job: dict[str, Any]) -> None:
         upsert_job(job)
     except Exception:  # noqa: BLE001, S110
         pass
-
-
-def pid_is_worker(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    try:
-        out = subprocess.check_output(  # noqa: S603
-            ["ps", "-p", str(pid), "-o", "command="],
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return True
-    return "upload-worker" in out.casefold()
 
 
 def worker_vivo(job: dict[str, Any] | None = None) -> bool:
@@ -527,9 +529,9 @@ def web_job_view(job: dict[str, Any] | None) -> dict[str, Any]:
     """Formato que a interface já espera em session.job."""
     if not job:
         return {}
-    from aula_uploader.upload_jobs import job_bucket, job_fase
     from aula_uploader.session import DEFAULT_URLS
     from aula_uploader.tui import conteudo_admin_url
+    from aula_uploader.upload_jobs import job_bucket, job_fase
 
     portal_key = str(job.get("portal") or "")
     base = DEFAULT_URLS.get(portal_key, "")
