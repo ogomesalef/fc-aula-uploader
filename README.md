@@ -20,6 +20,7 @@ git clone https://github.com/ogomesalef/fc-aula-uploader.git
 cd fc-aula-uploader
 python3 -m venv .venv
 source .venv/bin/activate
+pip install -U pip setuptools wheel
 pip install -e .
 
 # 3. abrir
@@ -34,6 +35,7 @@ Para atualizar depois:
 cd fc-aula-uploader
 git pull
 source .venv/bin/activate
+pip install -U pip setuptools wheel
 pip install -e .
 aula-uploader web
 ```
@@ -53,6 +55,7 @@ git clone https://github.com/ogomesalef/fc-aula-uploader.git
 cd fc-aula-uploader
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
+pip install -U pip setuptools wheel
 pip install -e .
 
 # 3. abrir
@@ -69,6 +72,7 @@ Para atualizar depois:
 cd fc-aula-uploader
 git pull
 .\.venv\Scripts\Activate.ps1
+pip install -U pip setuptools wheel
 pip install -e .
 aula-uploader web
 ```
